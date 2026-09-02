@@ -7,6 +7,12 @@ import {
   type ToolName,
 } from "@zjf-harness/permissions";
 import { writeSync, editSync, bashSync } from "@zjf-harness/tools";
+import {
+  createOpenAIClient,
+  createSession,
+  runLoop,
+  type ModelClient,
+} from "@zjf-harness/core";
 
 export type CliResult = {
   exitCode: number;
@@ -232,4 +238,102 @@ export function runCli(argv: string[]): CliResult {
     stdout: "mode=" + mode + " print=" + String(print) + "\n",
     stderr: "",
   };
+}
+
+function withoutPrompt(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--mode" || arg === "--write" || arg === "--edit" || arg === "--bash") {
+      out.push(arg);
+      const next = argv[i + 1];
+      if (next !== undefined) {
+        out.push(next);
+        i += 1;
+      }
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      out.push(arg);
+    }
+  }
+  return out;
+}
+
+export function previewPrompt(argv: string[]): string | undefined {
+  const parts: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--mode" || arg === "--write" || arg === "--edit" || arg === "--bash") {
+      i += 1;
+      continue;
+    }
+    if (
+      arg.startsWith("--mode=") ||
+      arg.startsWith("--write=") ||
+      arg.startsWith("--edit=") ||
+      arg.startsWith("--bash=")
+    ) {
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      continue;
+    }
+    parts.push(arg);
+  }
+  return parts.length > 0 ? parts.join(" ") : undefined;
+}
+
+export function isOneShotTool(argv: string[]): boolean {
+  return argv.some(
+    (arg) =>
+      arg === "--write" ||
+      arg === "--edit" ||
+      arg === "--bash" ||
+      arg.startsWith("--write=") ||
+      arg.startsWith("--edit=") ||
+      arg.startsWith("--bash="),
+  );
+}
+
+export function shouldRunPreview(argv: string[]): boolean {
+  if (isOneShotTool(argv)) return false;
+  if (argv.includes("-h") || argv.includes("--help")) return false;
+  return previewPrompt(argv) !== undefined;
+}
+
+export async function runPreview(
+  argv: string[],
+  model?: ModelClient,
+): Promise<CliResult> {
+  const parsed = runCli(withoutPrompt(argv));
+  if (parsed.exitCode !== 0) {
+    return parsed;
+  }
+  const prompt = previewPrompt(argv);
+  if (!prompt) {
+    return parsed;
+  }
+  const mode = parsed.stdout.match(/mode=(\S+)/)?.[1] ?? "plan";
+  const print = /print=true/.test(parsed.stdout);
+  try {
+    const result = await runLoop({
+      session: createSession({ mode }),
+      prompt,
+      print,
+      model: model ?? createOpenAIClient(),
+    });
+    return {
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: message.endsWith("\n") ? message : message + "\n",
+    };
+  }
 }
