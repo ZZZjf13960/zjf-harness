@@ -2,8 +2,11 @@ import {
   DEFAULT_PERMISSION_MODE,
   PERMISSION_MODES,
   parsePermissionMode,
+  canAutoRun,
   type PermissionMode,
+  type ToolName,
 } from "@zjf-harness/permissions";
+import { writeSync, editSync } from "@zjf-harness/tools";
 
 export type CliResult = {
   exitCode: number;
@@ -18,6 +21,8 @@ function usage(): string {
     "Options:",
     "  --mode <mode>   Permission mode: plan | accept-edits | bypass (default: plan)",
     "  -p, --print     Non-interactive print mode (does not change permission mode)",
+    "  --write <path>  Request write of 'after\\n' to path",
+    "  --edit <path>   Request edit of 'after\\n' to path",
     "  -h, --help      Show this help",
   ].join("\n") + "\n";
 }
@@ -27,6 +32,8 @@ export function runCli(argv: string[]): CliResult {
   let modeProvided = false;
   let print = false;
   let help = false;
+  let requestedTool: ToolName | undefined;
+  let targetPath: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -58,6 +65,59 @@ export function runCli(argv: string[]): CliResult {
     if (arg.startsWith("--mode=")) {
       modeProvided = true;
       modeRaw = arg.slice("--mode=".length);
+      continue;
+    }
+    if (arg === "--write") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --write\n",
+        };
+      }
+      requestedTool = "write";
+      targetPath = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--write=")) {
+      requestedTool = "write";
+      targetPath = arg.slice("--write=".length);
+      if (!targetPath) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --write\n",
+        };
+      }
+      continue;
+    }
+    if (arg === "--edit") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --edit\n",
+        };
+      }
+      requestedTool = "edit";
+      targetPath = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--edit=")) {
+      requestedTool = "edit";
+      targetPath = arg.slice("--edit=".length);
+      if (!targetPath) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --edit\n",
+        };
+      }
+      continue;
     }
   }
 
@@ -71,6 +131,32 @@ export function runCli(argv: string[]): CliResult {
   } else {
     try {
       mode = parsePermissionMode(modeRaw);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { exitCode: 1, stdout: "", stderr: message + "\n" };
+    }
+  }
+
+  if (requestedTool && targetPath) {
+    const allowed = canAutoRun(requestedTool, mode);
+    if (!allowed) {
+      let stderrMsg = `Tool '${requestedTool}' requires approval in mode '${mode}'.`;
+      if (print) {
+        stderrMsg += " Non-interactive print mode (-p) is fail-closed when approval is required.";
+      }
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: stderrMsg + "\n",
+      };
+    }
+
+    try {
+      if (requestedTool === "write") {
+        writeSync(targetPath);
+      } else {
+        editSync(targetPath);
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { exitCode: 1, stdout: "", stderr: message + "\n" };
