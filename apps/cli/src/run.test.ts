@@ -160,5 +160,113 @@ describe("cli", () => {
       expect(r2.exitCode).not.toBe(0);
       expect(r2.stderr).toMatch(/--edit/);
     });
+
+    it("--bash under plan fails closed and does not touch file", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      const file = path.join(tmpDir, "target.txt");
+      await writeFile(file, "before\n");
+
+      const r = runCli(["--mode", "plan", "--bash", `echo -n "after" > "${file}"`]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toMatch(/bash/);
+      expect(r.stderr).toMatch(/approval/);
+      expect(await readFile(file, "utf8")).toBe("before\n");
+    });
+
+    it("--bash defaults to plan and fails closed", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      const file = path.join(tmpDir, "target.txt");
+      await writeFile(file, "before\n");
+
+      const r = runCli(["--bash", `echo -n "after" > "${file}"`]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toMatch(/bash/);
+      expect(r.stderr).toMatch(/approval/);
+      expect(await readFile(file, "utf8")).toBe("before\n");
+    });
+
+    it("--bash under accept-edits is still gated and does not execute", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      const file = path.join(tmpDir, "target.txt");
+      await writeFile(file, "before\n");
+
+      const r = runCli(["--mode", "accept-edits", "--bash", `echo -n "after" > "${file}"`]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toMatch(/bash/);
+      expect(r.stderr).toMatch(/approval/);
+      expect(await readFile(file, "utf8")).toBe("before\n");
+    });
+
+    it("-p --mode plan --bash fails closed with fail-closed in stderr", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      const file = path.join(tmpDir, "target.txt");
+      await writeFile(file, "before\n");
+
+      const r = runCli(["-p", "--mode", "plan", "--bash", `echo -n "after" > "${file}"`]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toMatch(/fail-closed/);
+      expect(r.stderr).toMatch(/bash/);
+      expect(r.stderr).toMatch(/approval/);
+      expect(await readFile(file, "utf8")).toBe("before\n");
+    });
+
+    it("-p --mode accept-edits --bash fails closed", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      const file = path.join(tmpDir, "target.txt");
+      await writeFile(file, "before\n");
+
+      const r = runCli(["-p", "--mode", "accept-edits", "--bash", `echo -n "after" > "${file}"`]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toMatch(/fail-closed/);
+      expect(await readFile(file, "utf8")).toBe("before\n");
+    });
+
+    it("--bash under bypass executes command and modifies file", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      const file = path.join(tmpDir, "target.txt");
+      await writeFile(file, "before\n");
+
+      const r = runCli(["--mode", "bypass", "--bash", `echo -n "after" > "${file}"`]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toMatch(/mode=bypass print=false/);
+      expect(await readFile(file, "utf8")).toBe("after");
+    });
+
+    it("--bash under bypass captures stdout", () => {
+      const r = runCli(["--mode", "bypass", "--bash", "echo 'hello from bash'"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toMatch(/mode=bypass print=false/);
+      expect(r.stdout).toMatch(/hello from bash/);
+      expect(r.stderr).toBe("");
+    });
+
+    it("-p --mode bypass --bash executes command", () => {
+      const r = runCli(["-p", "--mode", "bypass", "--bash", "echo 'bypass print output'"]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toMatch(/mode=bypass print=true/);
+      expect(r.stdout).toMatch(/bypass print output/);
+      expect(r.stderr).toBe("");
+    });
+
+    it("--bash failing command returns non-zero and captures stderr", () => {
+      const r = runCli(["--mode", "bypass", "--bash", "echo 'error output' >&2; exit 7"]);
+      expect(r.exitCode).toBe(7);
+      expect(r.stdout).toMatch(/mode=bypass print=false/);
+      expect(r.stderr).toMatch(/error output/);
+    });
+
+    it("missing value for --bash exits non-zero", () => {
+      const r1 = runCli(["--bash"]);
+      expect(r1.exitCode).not.toBe(0);
+      expect(r1.stderr).toMatch(/--bash/);
+
+      const r2 = runCli(["--bash="]);
+      expect(r2.exitCode).not.toBe(0);
+      expect(r2.stderr).toMatch(/--bash/);
+
+      const r3 = runCli(["--bash", "-p"]);
+      expect(r3.exitCode).not.toBe(0);
+      expect(r3.stderr).toMatch(/--bash/);
+    });
   });
 });
