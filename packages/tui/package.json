@@ -1,19 +1,17 @@
 {
-  "name": "@zjf-harness/evals",
+  "name": "@zjf-harness/tui",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": "./src/index.ts",
   "scripts": {
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@zjf-harness/cli": "workspace:*",
-    "@zjf-harness/permissions": "workspace:*",
-    "@zjf-harness/tui": "workspace:*"
+    "@zjf-harness/permissions": "workspace:*"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"
   }
