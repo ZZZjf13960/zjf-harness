@@ -13,7 +13,8 @@
     "zjf-harness": "./src/index.ts"
   },
   "dependencies": {
-    "@zjf-harness/permissions": "workspace:*"
+    "@zjf-harness/permissions": "workspace:*",
+    "@zjf-harness/tools": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.8.2",

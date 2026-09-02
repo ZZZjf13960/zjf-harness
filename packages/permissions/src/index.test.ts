@@ -35,12 +35,24 @@ describe("permissions", () => {
     expect(canAutoRun("bash", "bypass")).toBe(true);
   });
 
-  it("plan ignores session allow", () => {
-    const allowed = new Set(["bash", "write"]);
+  it("plan ignores session allow and denies write and edit", () => {
+    const allowed = new Set(["bash", "write", "edit"]);
     expect(canAutoRun("bash", "plan", { sessionAllowed: allowed })).toBe(false);
     expect(canAutoRun("write", "plan", { sessionAllowed: allowed })).toBe(false);
+    expect(canAutoRun("edit", "plan", { sessionAllowed: allowed })).toBe(false);
+    expect(canAutoRun("write", "plan")).toBe(false);
+    expect(canAutoRun("edit", "plan")).toBe(false);
     expect(canAutoRun("read", "plan")).toBe(true);
     expect(canAutoRun("glob", "plan")).toBe(true);
     expect(canAutoRun("grep", "plan")).toBe(true);
+  });
+
+  it("bypass allows write and edit", () => {
+    expect(canAutoRun("write", "bypass")).toBe(true);
+    expect(canAutoRun("edit", "bypass")).toBe(true);
+    expect(canAutoRun("read", "bypass")).toBe(true);
+    expect(canAutoRun("bash", "bypass")).toBe(true);
+    expect(canAutoRun("glob", "bypass")).toBe(true);
+    expect(canAutoRun("grep", "bypass")).toBe(true);
   });
 });
