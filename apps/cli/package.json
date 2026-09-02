@@ -1,0 +1,23 @@
+{
+  "name": "@zjf-harness/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "start": "node --experimental-strip-types src/index.ts"
+  },
+  "bin": {
+    "zjf-harness": "./src/index.ts"
+  },
+  "dependencies": {
+    "@zjf-harness/permissions": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.9",
+    "@types/node": "^22.13.10"
+  }
+}
