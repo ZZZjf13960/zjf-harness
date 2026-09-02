@@ -6,7 +6,14 @@ import {
   type PermissionMode,
   type ToolName,
 } from "@zjf-harness/permissions";
-import { writeSync, editSync, bashSync } from "@zjf-harness/tools";
+import {
+  writeSync,
+  editSync,
+  bashSync,
+  readSync,
+  globSync,
+  grepSync,
+} from "@zjf-harness/tools";
 import {
   createOpenAIClient,
   createSession,
@@ -27,9 +34,13 @@ function usage(): string {
     "Options:",
     "  --mode <mode>   Permission mode: plan | accept-edits | bypass (default: plan)",
     "  -p, --print     Non-interactive print mode (does not change permission mode)",
+    "  --read <path>   Request read of file at path",
     "  --write <path>  Request write of 'after\\n' to path",
     "  --edit <path>   Request edit of 'after\\n' to path",
     "  --bash <cmd>    Request bash execution of command",
+    "  --glob <pat>    Request glob matching of pattern",
+    "  --grep <pat>    Request grep search of pattern",
+    "  --path <path>   Optional path for grep/glob (default: cwd)",
     "  -h, --help      Show this help",
   ].join("\n") + "\n";
 }
@@ -42,6 +53,9 @@ export function runCli(argv: string[]): CliResult {
   let requestedTool: ToolName | undefined;
   let targetPath: string | undefined;
   let bashCommand: string | undefined;
+  let globPattern: string | undefined;
+  let grepPattern: string | undefined;
+  let customPath: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -73,6 +87,32 @@ export function runCli(argv: string[]): CliResult {
     if (arg.startsWith("--mode=")) {
       modeProvided = true;
       modeRaw = arg.slice("--mode=".length);
+      continue;
+    }
+    if (arg === "--read") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --read\n",
+        };
+      }
+      requestedTool = "read";
+      targetPath = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--read=")) {
+      requestedTool = "read";
+      targetPath = arg.slice("--read=".length);
+      if (!targetPath) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --read\n",
+        };
+      }
       continue;
     }
     if (arg === "--write") {
@@ -149,6 +189,82 @@ export function runCli(argv: string[]): CliResult {
           exitCode: 1,
           stdout: "",
           stderr: "Missing value for --bash\n",
+        };
+      }
+      continue;
+    }
+    if (arg === "--glob") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --glob\n",
+        };
+      }
+      requestedTool = "glob";
+      globPattern = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--glob=")) {
+      requestedTool = "glob";
+      globPattern = arg.slice("--glob=".length);
+      if (!globPattern) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --glob\n",
+        };
+      }
+      continue;
+    }
+    if (arg === "--grep") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --grep\n",
+        };
+      }
+      requestedTool = "grep";
+      grepPattern = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--grep=")) {
+      requestedTool = "grep";
+      grepPattern = arg.slice("--grep=".length);
+      if (!grepPattern) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --grep\n",
+        };
+      }
+      continue;
+    }
+    if (arg === "--path") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --path\n",
+        };
+      }
+      customPath = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--path=")) {
+      customPath = arg.slice("--path=".length);
+      if (!customPath) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --path\n",
         };
       }
       continue;
@@ -230,6 +346,75 @@ export function runCli(argv: string[]): CliResult {
           stderr: message + "\n",
         };
       }
+    } else if (requestedTool === "read") {
+      if (!targetPath) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing target path for read\n",
+        };
+      }
+      try {
+        const content = readSync(targetPath);
+        let out = "mode=" + mode + " print=" + String(print) + "\n";
+        if (content) {
+          out += content;
+        }
+        return {
+          exitCode: 0,
+          stdout: out,
+          stderr: "",
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { exitCode: 1, stdout: "", stderr: message + "\n" };
+      }
+    } else if (requestedTool === "glob") {
+      if (!globPattern) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing pattern for glob\n",
+        };
+      }
+      try {
+        const matches = globSync({ pattern: globPattern, cwd: customPath });
+        let out = "mode=" + mode + " print=" + String(print) + "\n";
+        if (matches.length > 0) {
+          out += matches.join("\n") + "\n";
+        }
+        return {
+          exitCode: 0,
+          stdout: out,
+          stderr: "",
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { exitCode: 1, stdout: "", stderr: message + "\n" };
+      }
+    } else if (requestedTool === "grep") {
+      if (!grepPattern) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing pattern for grep\n",
+        };
+      }
+      try {
+        const matches = grepSync({ pattern: grepPattern, path: customPath });
+        let out = "mode=" + mode + " print=" + String(print) + "\n";
+        if (matches.length > 0) {
+          out += matches.join("\n") + "\n";
+        }
+        return {
+          exitCode: 0,
+          stdout: out,
+          stderr: "",
+        };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { exitCode: 1, stdout: "", stderr: message + "\n" };
+      }
     }
   }
 
@@ -244,7 +429,7 @@ function withoutPrompt(argv: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--mode" || arg === "--write" || arg === "--edit" || arg === "--bash") {
+    if (arg === "--mode" || arg === "--write" || arg === "--edit" || arg === "--bash" || arg === "--read" || arg === "--glob" || arg === "--grep" || arg === "--path") {
       out.push(arg);
       const next = argv[i + 1];
       if (next !== undefined) {
@@ -264,7 +449,7 @@ export function previewPrompt(argv: string[]): string | undefined {
   const parts: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--mode" || arg === "--write" || arg === "--edit" || arg === "--bash") {
+    if (arg === "--mode" || arg === "--write" || arg === "--edit" || arg === "--bash" || arg === "--read" || arg === "--glob" || arg === "--grep" || arg === "--path") {
       i += 1;
       continue;
     }
@@ -272,7 +457,11 @@ export function previewPrompt(argv: string[]): string | undefined {
       arg.startsWith("--mode=") ||
       arg.startsWith("--write=") ||
       arg.startsWith("--edit=") ||
-      arg.startsWith("--bash=")
+      arg.startsWith("--bash=") ||
+      arg.startsWith("--read=") ||
+      arg.startsWith("--glob=") ||
+      arg.startsWith("--grep=") ||
+      arg.startsWith("--path=")
     ) {
       continue;
     }
@@ -290,9 +479,15 @@ export function isOneShotTool(argv: string[]): boolean {
       arg === "--write" ||
       arg === "--edit" ||
       arg === "--bash" ||
+      arg === "--read" ||
+      arg === "--glob" ||
+      arg === "--grep" ||
       arg.startsWith("--write=") ||
       arg.startsWith("--edit=") ||
-      arg.startsWith("--bash="),
+      arg.startsWith("--bash=") ||
+      arg.startsWith("--read=") ||
+      arg.startsWith("--glob=") ||
+      arg.startsWith("--grep="),
   );
 }
 
