@@ -45,9 +45,13 @@ describe("Friday demo section 8", () => {
     expect(r.exitCode, "plan must not complete a write without approval").not.toBe(0);
     expect(await readFile(file, "utf8")).toBe("before\\n");
   });
-  it("5. accepting a plan switches to accept-edits", () => {
-    const r = runCli([modeFlag, "plan"]);
-    expect(r.stdout, "accepting a plan must report mode=accept-edits").toMatch(/mode=accept-edits/);
+  it("5. accepting a plan switches to accept-edits", async () => {
+    const cli = await import("@zjf-harness/cli");
+    const session = cli as unknown as {
+      acceptPlan?: (input: { mode: string }) => { mode: string };
+    };
+    expect(session.acceptPlan, "must export acceptPlan; do not fake this via startup mode flag").toBeTypeOf("function");
+    expect(session.acceptPlan!({ mode: "plan" }).mode).toBe("accept-edits");
   });
 
   it("6. accept-edits auto-applies file edits; bash still gated", async () => {
@@ -84,8 +88,14 @@ describe("Friday demo section 8", () => {
     expect(r.exitCode).toBe(0);
     expect(await readFile(file, "utf8"), "bypass print may change files").toBe("after\\n");
   });
-  it("9. mode cycle updates immediately for the next tool call", () => {
-    const r = runCli([modeFlag, "plan"]);
-    expect(r.stdout, "after Shift+Tab or /mode the reported mode must change").toMatch(/mode=accept-edits/);
+  it("9. slash mode updates immediately for the next tool call", async () => {
+    const cli = await import("@zjf-harness/cli");
+    const session = cli as unknown as {
+      applyModeCommand?: (command: string, input: { mode: string }) => { mode: string };
+    };
+    expect(session.applyModeCommand, "must export applyModeCommand for /mode; not startup mode flag").toBeTypeOf("function");
+    const after = session.applyModeCommand!("/mode accept-edits", { mode: "plan" });
+    expect(after.mode).toBe("accept-edits");
+    expect(canAutoRun("write", "accept-edits")).toBe(true);
   });
 });
