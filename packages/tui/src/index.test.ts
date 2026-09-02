@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { acceptPlan, applyModeCommand, cycleMode } from "./index";
+import {
+  acceptPlan,
+  applyModeCommand,
+  cycleMode,
+  interruptTurn,
+  presentApproval,
+  renderApproval,
+  resolveApproval,
+  statusBar,
+} from "./index";
 
 describe("acceptPlan", () => {
   it("switches plan to accept-edits", () => {
@@ -37,5 +46,66 @@ describe("cycleMode", () => {
     expect(cycleMode({ mode: "plan" }).mode).toBe("accept-edits");
     expect(cycleMode({ mode: "accept-edits" }).mode).toBe("bypass");
     expect(cycleMode({ mode: "bypass" }).mode).toBe("plan");
+  });
+});
+
+describe("statusBar", () => {
+  it("shows the wire name untranslated", () => {
+    expect(statusBar("plan")).toBe("plan");
+    expect(statusBar("accept-edits")).toBe("accept-edits");
+    expect(statusBar("bypass")).toBe("bypass");
+  });
+});
+
+describe("presentApproval", () => {
+  it("plan write and bash need a card, default deny", () => {
+    const write = presentApproval({ tool: "write", mode: "plan", body: "target.txt" });
+    expect(write).not.toBeNull();
+    expect(write!.defaultAction).toBe("deny");
+    expect(write!.mode).toBe("plan");
+    const bash = presentApproval({ tool: "bash", mode: "plan", body: "ls" });
+    expect(bash).not.toBeNull();
+    expect(bash!.defaultAction).toBe("deny");
+  });
+
+  it("accept-edits auto file has no card; bash still has one, default allow", () => {
+    expect(presentApproval({ tool: "write", mode: "accept-edits" })).toBeNull();
+    expect(presentApproval({ tool: "edit", mode: "accept-edits" })).toBeNull();
+    const bash = presentApproval({ tool: "bash", mode: "accept-edits", body: "ls" });
+    expect(bash).not.toBeNull();
+    expect(bash!.defaultAction).toBe("allow");
+  });
+
+  it("bypass never renders a card", () => {
+    expect(presentApproval({ tool: "bash", mode: "bypass" })).toBeNull();
+    expect(presentApproval({ tool: "write", mode: "bypass" })).toBeNull();
+  });
+});
+
+describe("resolveApproval", () => {
+  const card = presentApproval({ tool: "bash", mode: "accept-edits", body: "ls" })!;
+
+  it("y allows, n denies, a session-allows by tool name, escape interrupts", () => {
+    expect(resolveApproval(card, "y")).toEqual({ decision: "allow" });
+    expect(resolveApproval(card, "n")).toEqual({ decision: "deny" });
+    expect(resolveApproval(card, "a")).toEqual({
+      decision: "allow-session",
+      sessionTool: "bash",
+    });
+    expect(resolveApproval(card, "escape")).toEqual({ decision: "interrupt" });
+  });
+
+  it("render shows tool, mode, and actions", () => {
+    const text = renderApproval(card);
+    expect(text).toMatch(/tool: bash/);
+    expect(text).toMatch(/mode: accept-edits/);
+    expect(text).toMatch(/允许/);
+    expect(text).toMatch(/拒绝/);
+  });
+});
+
+describe("interruptTurn", () => {
+  it("marks the turn interrupted", () => {
+    expect(interruptTurn()).toEqual({ interrupted: true });
   });
 });
