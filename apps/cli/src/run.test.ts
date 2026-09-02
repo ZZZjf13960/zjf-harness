@@ -269,4 +269,127 @@ describe("cli", () => {
       expect(r3.stderr).toMatch(/--bash/);
     });
   });
+
+  describe("read / glob / grep tools (--read / --glob / --grep / --path)", () => {
+    let tmpDir: string | undefined;
+
+    afterEach(async () => {
+      if (tmpDir) {
+        await rm(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it("--read auto-runs in plan mode (default) and prints file contents", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-read-"));
+      const file = path.join(tmpDir, "hello.txt");
+      await writeFile(file, "hello from plan read\n", "utf8");
+
+      const r = runCli(["--read", file]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe("mode=plan print=false\nhello from plan read\n");
+      expect(r.stderr).toBe("");
+    });
+
+    it("--read auto-runs in accept-edits and bypass modes", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-read-"));
+      const file = path.join(tmpDir, "content.txt");
+      await writeFile(file, "some file content\n", "utf8");
+
+      const r1 = runCli(["--mode", "accept-edits", "--read", file]);
+      expect(r1.exitCode).toBe(0);
+      expect(r1.stdout).toBe("mode=accept-edits print=false\nsome file content\n");
+
+      const r2 = runCli(["--mode", "bypass", "-p", `--read=${file}`]);
+      expect(r2.exitCode).toBe(0);
+      expect(r2.stdout).toBe("mode=bypass print=true\nsome file content\n");
+    });
+
+    it("--read on missing file fails with non-zero exit code", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-read-"));
+      const missingFile = path.join(tmpDir, "missing.txt");
+
+      const r = runCli(["--read", missingFile]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).not.toBe("");
+    });
+
+    it("--read with missing value exits non-zero", () => {
+      const r1 = runCli(["--read"]);
+      expect(r1.exitCode).not.toBe(0);
+      expect(r1.stderr).toMatch(/--read/);
+
+      const r2 = runCli(["--read="]);
+      expect(r2.exitCode).not.toBe(0);
+      expect(r2.stderr).toMatch(/--read/);
+    });
+
+    it("--glob auto-runs in plan mode and prints matching paths", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-glob-"));
+      await writeFile(path.join(tmpDir, "file2.txt"), "2");
+      await writeFile(path.join(tmpDir, "file1.txt"), "1");
+
+      const r = runCli(["--glob", "*.txt", "--path", tmpDir]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe("mode=plan print=false\nfile1.txt\nfile2.txt\n");
+    });
+
+    it("--glob auto-runs in accept-edits and bypass modes", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-glob-"));
+      await writeFile(path.join(tmpDir, "alpha.json"), "{}");
+
+      const r1 = runCli(["--mode", "accept-edits", "--glob=*.json", `--path=${tmpDir}`]);
+      expect(r1.exitCode).toBe(0);
+      expect(r1.stdout).toBe("mode=accept-edits print=false\nalpha.json\n");
+
+      const r2 = runCli(["--mode", "bypass", "-p", "--glob", "*.json", "--path", tmpDir]);
+      expect(r2.exitCode).toBe(0);
+      expect(r2.stdout).toBe("mode=bypass print=true\nalpha.json\n");
+    });
+
+    it("--glob with missing value or invalid dir exits non-zero", () => {
+      const r1 = runCli(["--glob"]);
+      expect(r1.exitCode).not.toBe(0);
+      expect(r1.stderr).toMatch(/--glob/);
+
+      const r2 = runCli(["--glob", "*.txt", "--path", "/nonexistent_dir_123"]);
+      expect(r2.exitCode).not.toBe(0);
+      expect(r2.stderr).not.toBe("");
+    });
+
+    it("--grep auto-runs in plan mode and prints matching file:line:text", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-grep-"));
+      const file = path.join(tmpDir, "test.txt");
+      await writeFile(file, "first line\nmatch here 1\nthird line\nmatch here 2\n");
+
+      const r = runCli(["--grep", "match here", "--path", file]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toBe(
+        `mode=plan print=false\n${file}:2:match here 1\n${file}:4:match here 2\n`,
+      );
+    });
+
+    it("--grep auto-runs in accept-edits and bypass modes across directory", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-grep-"));
+      const file1 = path.join(tmpDir, "a.txt");
+      const file2 = path.join(tmpDir, "b.txt");
+      await writeFile(file1, "keyword alpha\n");
+      await writeFile(file2, "keyword beta\n");
+
+      const r = runCli(["--mode", "bypass", "--grep", "keyword", "--path", tmpDir]);
+      expect(r.exitCode).toBe(0);
+      expect(r.stdout).toContain("mode=bypass print=false\n");
+      expect(r.stdout).toContain("keyword alpha");
+      expect(r.stdout).toContain("keyword beta");
+    });
+
+    it("--grep on missing file or invalid value exits non-zero", () => {
+      const r1 = runCli(["--grep"]);
+      expect(r1.exitCode).not.toBe(0);
+      expect(r1.stderr).toMatch(/--grep/);
+
+      const r2 = runCli(["--grep", "pattern", "--path", "/nonexistent_file_grep.txt"]);
+      expect(r2.exitCode).not.toBe(0);
+      expect(r2.stderr).not.toBe("");
+    });
+  });
 });
