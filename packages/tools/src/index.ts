@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -24,6 +25,21 @@ export type FileToolArgs =
       oldText?: string;
     };
 
+export type BashToolArgs =
+  | string
+  | {
+      command?: string;
+      cmd?: string;
+      cwd?: string;
+    };
+
+export type BashResult = {
+  success: boolean;
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+};
+
 function extractPathAndContent(args: unknown): { targetPath: string; content: string } {
   if (typeof args === "string") {
     return { targetPath: args, content: "after\n" };
@@ -38,6 +54,47 @@ function extractPathAndContent(args: unknown): { targetPath: string; content: st
     return { targetPath, content: String(content) };
   }
   throw new Error("Invalid arguments for filesystem tool");
+}
+
+function extractCommand(args: unknown): { command: string; cwd?: string } {
+  if (typeof args === "string") {
+    if (!args) {
+      throw new Error("Missing command for bash tool");
+    }
+    return { command: args };
+  }
+  if (typeof args === "object" && args !== null) {
+    const obj = args as Record<string, unknown>;
+    const command = (obj.command ?? obj.cmd) as string | undefined;
+    if (!command || typeof command !== "string") {
+      throw new Error("Missing command for bash tool");
+    }
+    const cwd = typeof obj.cwd === "string" ? obj.cwd : undefined;
+    return { command, cwd };
+  }
+  throw new Error("Invalid arguments for bash tool");
+}
+
+export function bashSync(args: unknown): BashResult {
+  const { command, cwd } = extractCommand(args);
+  const res = spawnSync(command, {
+    shell: "/bin/bash",
+    encoding: "utf8",
+    cwd,
+  });
+  const exitCode = res.status ?? (res.error ? 1 : 0);
+  const stdout = res.stdout ?? "";
+  const stderr = res.stderr ?? (res.error ? res.error.message : "");
+  return {
+    success: exitCode === 0,
+    exitCode,
+    stdout,
+    stderr,
+  };
+}
+
+export async function bashHandler(args: unknown): Promise<BashResult> {
+  return bashSync(args);
 }
 
 export function writeSync(args: unknown): { success: boolean; path: string } {
@@ -104,11 +161,16 @@ function notImplemented(name: ToolName): Tool {
   };
 }
 
-const STUB_TOOL_NAMES: ToolName[] = ["read", "bash", "glob", "grep"];
+register(notImplemented("read"));
 
-for (const name of STUB_TOOL_NAMES) {
-  register(notImplemented(name));
-}
+register({
+  name: "bash",
+  description: "Execute a bash command",
+  run: bashHandler,
+});
+
+register(notImplemented("glob"));
+register(notImplemented("grep"));
 
 register({
   name: "write",
@@ -121,4 +183,5 @@ register({
   description: "Edit a file",
   run: editHandler,
 });
+
 

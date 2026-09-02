@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
-import { get, list, writeSync, editSync } from "./index";
+import { get, list, writeSync, editSync, bashSync, bashHandler } from "./index";
 
 describe("tools", () => {
   let tmpDir: string | undefined;
@@ -19,11 +19,52 @@ describe("tools", () => {
   });
 
   it("stubs throw not implemented", async () => {
-    for (const name of ["read", "bash", "glob", "grep"] as const) {
+    for (const name of ["read", "glob", "grep"] as const) {
       const tool = get(name);
       expect(tool).toBeDefined();
       await expect(tool!.run({})).rejects.toThrow("not implemented");
     }
+  });
+
+  it("bash tool executes command asynchronously", async () => {
+    const bashTool = get("bash");
+    expect(bashTool).toBeDefined();
+    const result = (await bashTool!.run({ command: "echo 'hello bash'" })) as {
+      success: boolean;
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+    };
+    expect(result.success).toBe(true);
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.trim()).toBe("hello bash");
+  });
+
+  it("bashSync executes commands synchronously and captures stdout/stderr", () => {
+    const res1 = bashSync("echo 'sync bash output'");
+    expect(res1.success).toBe(true);
+    expect(res1.exitCode).toBe(0);
+    expect(res1.stdout.trim()).toBe("sync bash output");
+    expect(res1.stderr).toBe("");
+
+    const res2 = bashSync("echo 'error message' >&2; exit 42");
+    expect(res2.success).toBe(false);
+    expect(res2.exitCode).toBe(42);
+    expect(res2.stderr.trim()).toBe("error message");
+  });
+
+  it("bashSync and bashHandler can write to a file", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+    const file = path.join(tmpDir, "bash_out.txt");
+    const res = await bashHandler(`echo -n "from bash" > "${file}"`);
+    expect(res.success).toBe(true);
+    expect(await readFile(file, "utf8")).toBe("from bash");
+  });
+
+  it("bash throws on missing command", () => {
+    expect(() => bashSync("")).toThrow(/Missing command/);
+    expect(() => bashSync({})).toThrow(/Missing command/);
+    expect(() => bashSync(123)).toThrow(/Invalid arguments/);
   });
 
   it("write tool writes content asynchronously", async () => {
