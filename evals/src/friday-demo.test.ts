@@ -7,6 +7,7 @@ import { canAutoRun } from "@zjf-harness/permissions";
 
 const modeFlag = "-" + "-" + "mode";
 const printFlag = "-p";
+const writeFlag = "-" + "-write";
 
 async function withTarget() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "zjf-evals-"));
@@ -77,16 +78,16 @@ describe("Friday demo section 8", () => {
   });
   it("8b. print plus plan plus write is fail-closed", async () => {
     const file = await withTarget();
-    const r = runCli([printFlag, modeFlag, "plan"]);
+    const r = runCli([printFlag, modeFlag, "plan", writeFlag, file]);
     expect(r.exitCode, "print+plan must exit non-zero when a write is requested").not.toBe(0);
     expect(await readFile(file, "utf8")).toBe("before\\n");
   });
 
   it("8c. print plus bypass may write", async () => {
     const file = await withTarget();
-    const r = runCli([printFlag, modeFlag, "bypass"]);
+    const r = runCli([printFlag, modeFlag, "bypass", writeFlag, file]);
     expect(r.exitCode).toBe(0);
-    expect(await readFile(file, "utf8"), "bypass print may change files").toBe("after\\n");
+    expect(await readFile(file, "utf8"), "bypass print may change files").toBe("after\n");
   });
   it("9. slash mode updates immediately for the next tool call", async () => {
     const tui = await import("@zjf-harness/tui");
