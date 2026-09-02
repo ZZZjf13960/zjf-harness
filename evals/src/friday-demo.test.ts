@@ -8,6 +8,8 @@ import { canAutoRun } from "@zjf-harness/permissions";
 const modeFlag = "-" + "-" + "mode";
 const printFlag = "-p";
 const writeFlag = "-" + "-write";
+const editFlag = "-" + "-edit";
+const bashFlag = "-" + "-bash";
 
 async function withTarget() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "zjf-evals-"));
@@ -39,13 +41,21 @@ describe("Friday demo section 8", () => {
     expect(r.stderr).toMatch(/bypass/);
   });
   it("4. plan plus write/bash needs approval; files unchanged until allowed", async () => {
-    expect(canAutoRun("write", "plan")).toBe(false);
-    expect(canAutoRun("bash", "plan")).toBe(false);
+    const tui = await import("@zjf-harness/tui");
+    const writeCard = tui.presentApproval({ tool: "write", mode: "plan" });
+    const bashCard = tui.presentApproval({ tool: "bash", mode: "plan" });
+    expect(writeCard).not.toBeNull();
+    expect(bashCard).not.toBeNull();
+    expect(tui.resolveApproval(writeCard!, "n").decision).toBe("deny");
     const file = await withTarget();
-    const r = runCli([modeFlag, "plan"]);
-    expect(r.exitCode, "plan must not complete a write without approval").not.toBe(0);
+    const r = runCli([modeFlag, "plan", writeFlag, file]);
+    expect(r.exitCode).not.toBe(0);
     expect(await readFile(file, "utf8")).toBe("before\\n");
+    const blocked = runCli([printFlag, modeFlag, "plan", bashFlag, "true"]);
+    expect(blocked.exitCode, "print plus plan plus bash is fail-closed").not.toBe(0);
+    expect(blocked.stdout).not.toMatch(/tool:/);
   });
+
   it("5. accepting a plan switches to accept-edits", async () => {
     const tui = await import("@zjf-harness/tui");
     const session = tui as unknown as {
@@ -56,18 +66,28 @@ describe("Friday demo section 8", () => {
   });
 
   it("6. accept-edits auto-applies file edits; bash still gated", async () => {
-    expect(canAutoRun("edit", "accept-edits")).toBe(true);
-    expect(canAutoRun("bash", "accept-edits")).toBe(false);
+    const tui = await import("@zjf-harness/tui");
+    expect(tui.presentApproval({ tool: "edit", mode: "accept-edits" })).toBeNull();
+    const bashCard = tui.presentApproval({ tool: "bash", mode: "accept-edits" });
+    expect(bashCard).not.toBeNull();
+    expect(tui.resolveApproval(bashCard!, "n").decision).toBe("deny");
     const file = await withTarget();
-    runCli([modeFlag, "accept-edits"]);
-    expect(await readFile(file, "utf8"), "edit must auto-apply").toBe("after\\n");
+    const r = runCli([modeFlag, "accept-edits", editFlag, file]);
+    expect(r.exitCode).toBe(0);
+    expect(await readFile(file, "utf8"), "edit must auto-apply").toBe("after" + String.fromCharCode(10));
+    const blocked = runCli([printFlag, modeFlag, "accept-edits", bashFlag, "true"]);
+    expect(blocked.exitCode, "print plus accept-edits plus bash is fail-closed").not.toBe(0);
   });
-  it("7. bypass does not prompt bash; Esc still interrupts", () => {
-    expect(canAutoRun("bash", "bypass")).toBe(true);
-    const r = runCli([modeFlag, "bypass"]);
-    expect(r.stdout).toMatch(/mode=bypass/);
-    expect(r.stderr, "Esc interrupt surface not implemented").toMatch(/interrupted/);
+
+  it("7. bypass does not prompt bash; Esc still interrupts", async () => {
+    const tui = await import("@zjf-harness/tui");
+    expect(tui.presentApproval({ tool: "bash", mode: "bypass" })).toBeNull();
+    expect(tui.interruptTurn()).toEqual({ interrupted: true });
+    const planCard = tui.presentApproval({ tool: "bash", mode: "plan" });
+    expect(planCard).not.toBeNull();
+    expect(tui.resolveApproval(planCard!, "escape").decision).toBe("interrupt");
   });
+
   it("8a. print flag does not upgrade mode", () => {
     const r = runCli([printFlag]);
     expect(r.exitCode).toBe(0);
