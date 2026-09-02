@@ -1,8 +1,8 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { runCli } from "./run";
+import { runCli, runPreview, shouldRunPreview } from "./run";
 
-export { runCli } from "./run";
+export { runCli, runPreview, shouldRunPreview } from "./run";
 export type { CliResult } from "./run";
 
 function isDirectRun(): boolean {
@@ -11,9 +11,14 @@ function isDirectRun(): boolean {
   return import.meta.url === pathToFileURL(path.resolve(entry)).href;
 }
 
-if (isDirectRun()) {
-  const result = runCli(process.argv.slice(2));
+async function main(): Promise<void> {
+  const argv = process.argv.slice(2);
+  const result = shouldRunPreview(argv) ? await runPreview(argv) : runCli(argv);
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   process.exit(result.exitCode);
+}
+
+if (isDirectRun()) {
+  void main();
 }
