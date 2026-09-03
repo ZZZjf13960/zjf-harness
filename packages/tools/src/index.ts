@@ -11,6 +11,7 @@ export type Tool = {
   name: ToolName;
   description: string;
   run: ToolHandler;
+  parameters?: Record<string, unknown>;
 };
 
 export type FileToolArgs =
@@ -384,36 +385,124 @@ export function list(): Tool[] {
 register({
   name: "read",
   description: "Read content from a file",
+  parameters: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Path to the file to read",
+      },
+    },
+    required: ["path"],
+  },
   run: readHandler,
 });
 
 register({
   name: "bash",
   description: "Execute a bash command",
+  parameters: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        description: "Command to execute",
+      },
+      cwd: {
+        type: "string",
+        description: "Optional working directory",
+      },
+    },
+    required: ["command"],
+  },
   run: bashHandler,
 });
 
 register({
   name: "glob",
   description: "Match files under a cwd with a glob pattern",
+  parameters: {
+    type: "object",
+    properties: {
+      pattern: {
+        type: "string",
+        description: "Glob pattern to match files",
+      },
+      cwd: {
+        type: "string",
+        description: "Directory to search within",
+      },
+      path: {
+        type: "string",
+        description: "Directory path to search in (optional alias for cwd)",
+      },
+    },
+    required: ["pattern"],
+  },
   run: globHandler,
 });
 
 register({
   name: "grep",
   description: "Search file contents for a pattern",
+  parameters: {
+    type: "object",
+    properties: {
+      pattern: {
+        type: "string",
+        description: "Pattern or text to search for",
+      },
+      path: {
+        type: "string",
+        description: "File or directory path to search within",
+      },
+      glob: {
+        type: "string",
+        description: "Glob pattern to filter files",
+      },
+    },
+    required: ["pattern"],
+  },
   run: grepHandler,
 });
 
 register({
   name: "write",
   description: "Write content to a file",
+  parameters: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Path to the file to write",
+      },
+      content: {
+        type: "string",
+        description: "Content to write to the file",
+      },
+    },
+    required: ["path", "content"],
+  },
   run: writeHandler,
 });
 
 register({
   name: "edit",
   description: "Edit a file",
+  parameters: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Path to the file to edit",
+      },
+      content: {
+        type: "string",
+        description: "Content to write to the file",
+      },
+    },
+    required: ["path", "content"],
+  },
   run: editHandler,
 });
 

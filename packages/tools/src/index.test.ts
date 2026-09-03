@@ -31,6 +31,111 @@ describe("tools", () => {
     expect(names).toEqual(["read", "bash", "glob", "grep", "write", "edit"]);
   });
 
+  it("registers OpenAI JSON-schema parameters for all six tools", () => {
+    const tools = list();
+    expect(tools).toHaveLength(6);
+
+    const read = get("read");
+    expect(read?.parameters).toEqual({
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: expect.any(String),
+        },
+      },
+      required: ["path"],
+    });
+
+    const bash = get("bash");
+    expect(bash?.parameters).toEqual({
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description: expect.any(String),
+        },
+        cwd: {
+          type: "string",
+          description: expect.any(String),
+        },
+      },
+      required: ["command"],
+    });
+
+    const glob = get("glob");
+    expect(glob?.parameters).toEqual({
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: expect.any(String),
+        },
+        cwd: {
+          type: "string",
+          description: expect.any(String),
+        },
+        path: {
+          type: "string",
+          description: expect.any(String),
+        },
+      },
+      required: ["pattern"],
+    });
+
+    const grep = get("grep");
+    expect(grep?.parameters).toEqual({
+      type: "object",
+      properties: {
+        pattern: {
+          type: "string",
+          description: expect.any(String),
+        },
+        path: {
+          type: "string",
+          description: expect.any(String),
+        },
+        glob: {
+          type: "string",
+          description: expect.any(String),
+        },
+      },
+      required: ["pattern"],
+    });
+
+    const write = get("write");
+    expect(write?.parameters).toEqual({
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: expect.any(String),
+        },
+        content: {
+          type: "string",
+          description: expect.any(String),
+        },
+      },
+      required: ["path", "content"],
+    });
+
+    const edit = get("edit");
+    expect(edit?.parameters).toEqual({
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: expect.any(String),
+        },
+        content: {
+          type: "string",
+          description: expect.any(String),
+        },
+      },
+      required: ["path", "content"],
+    });
+  });
+
   describe("read tool", () => {
     it("readSync reads utf8 file content", async () => {
       tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-read-"));

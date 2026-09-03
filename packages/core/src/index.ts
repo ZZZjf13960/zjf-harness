@@ -31,7 +31,11 @@ export type ModelTurn = {
 export type ModelClient = {
   complete(input: {
     messages: ChatMessage[];
-    tools: { name: string; description: string }[];
+    tools: {
+      name: string;
+      description: string;
+      parameters?: Record<string, unknown>;
+    }[];
   }): Promise<ModelTurn>;
 };
 
@@ -91,6 +95,7 @@ export async function runLoop(input: {
     const tools = list().map((tool) => ({
       name: tool.name,
       description: tool.description,
+      parameters: tool.parameters,
     }));
     const reply = await input.model.complete({
       messages: session.messages,
@@ -218,7 +223,10 @@ export function createOpenAIClient(
           function: {
             name: tool.name,
             description: tool.description,
-            parameters: { type: "object", additionalProperties: true },
+            parameters: tool.parameters ?? {
+              type: "object",
+              additionalProperties: true,
+            },
           },
         })),
       };
