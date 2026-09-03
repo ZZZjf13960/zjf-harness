@@ -15,7 +15,8 @@
   "dependencies": {
     "@zjf-harness/core": "workspace:*",
     "@zjf-harness/permissions": "workspace:*",
-    "@zjf-harness/tools": "workspace:*"
+    "@zjf-harness/tools": "workspace:*",
+    "@zjf-harness/tui": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.8.2",
