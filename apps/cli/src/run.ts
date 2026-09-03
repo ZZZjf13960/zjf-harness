@@ -20,6 +20,8 @@ import {
   runLoop,
   type ModelClient,
 } from "@zjf-harness/core";
+import { approveLive, handleLine, liveBanner } from "@zjf-harness/tui";
+import readline from "node:readline";
 
 export type CliResult = {
   exitCode: number;
@@ -500,29 +502,110 @@ export function shouldRunPreview(argv: string[]): boolean {
 export async function runPreview(
   argv: string[],
   model?: ModelClient,
+  io?: {
+    interactive?: boolean;
+    write?: (text: string) => void;
+    readKey?: () => Promise<string>;
+    readLine?: () => Promise<string | undefined>;
+  },
 ): Promise<CliResult> {
   const parsed = runCli(withoutPrompt(argv));
   if (parsed.exitCode !== 0) {
     return parsed;
   }
-  const prompt = previewPrompt(argv);
+  let prompt = previewPrompt(argv);
   if (!prompt) {
     return parsed;
   }
   const mode = parsed.stdout.match(/mode=(\S+)/)?.[1] ?? "plan";
   const print = /print=true/.test(parsed.stdout);
-  try {
+  const interactive = !print && (io?.interactive ?? Boolean(process.stdin.isTTY));
+  const write = io?.write ?? ((text: string) => {
+    process.stdout.write(text);
+  });
+  const readKey =
+    io?.readKey ??
+    (async () => {
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      const line = await new Promise<string>((resolve) =>
+        rl.question("approve> ", resolve),
+      );
+      rl.close();
+      const t = line.trim().toLowerCase();
+      if (t === "esc" || t === "escape") return "escape";
+      return t[0] ?? "n";
+    });
+  const readLine =
+    io?.readLine ??
+    (interactive
+      ? async () => {
+          const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+          });
+          const line = await new Promise<string>((resolve) =>
+            rl.question("> ", resolve),
+          );
+          rl.close();
+          return line;
+        }
+      : undefined);
+  const client = model ?? createOpenAIClient();
+  const session = createSession({ mode });
+  if (interactive) {
+    write(liveBanner(session.mode));
+  }
+
+  async function once(text: string): Promise<CliResult> {
     const result = await runLoop({
-      session: createSession({ mode }),
-      prompt,
+      session,
+      prompt: text,
       print,
-      model: model ?? createOpenAIClient(),
+      model: client,
+      onApprove:
+        interactive
+          ? (gate) => approveLive(gate, { write, readKey })
+          : undefined,
     });
     return {
       exitCode: result.exitCode,
       stdout: result.stdout,
       stderr: result.stderr,
     };
+  }
+
+  try {
+    let last = await once(prompt);
+    if (!interactive || !readLine) {
+      return last;
+    }
+    write(last.stdout);
+    if (last.stderr) write(last.stderr);
+    while (true) {
+      write(liveBanner(session.mode));
+      const line = await readLine();
+      if (line === undefined || line.trim() === "") {
+        return { exitCode: last.exitCode, stdout: "", stderr: "" };
+      }
+      const handled = handleLine(line, session.mode);
+      if (handled.type === "empty") {
+        return { exitCode: last.exitCode, stdout: "", stderr: "" };
+      }
+      if (handled.type === "mode") {
+        session.mode = handled.mode;
+        write("mode=" + session.mode + "\n");
+        continue;
+      }
+      last = await once(handled.text);
+      write(last.stdout);
+      if (last.stderr) write(last.stderr);
+      if (last.stderr.includes("interrupted")) {
+        return { exitCode: last.exitCode, stdout: "", stderr: "" };
+      }
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return {
