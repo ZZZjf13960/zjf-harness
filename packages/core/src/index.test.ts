@@ -127,3 +127,60 @@ describe("runLoop", () => {
     expect(result.stdout).toMatch(/hello preview/);
   });
 });
+
+  it("onApprove allow lets a gated write run when not print", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-loop-"));
+    const file = path.join(tmpDir, "target.txt");
+    await writeFile(file, "before\n");
+    const result = await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "write it",
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "1",
+              name: "write",
+              arguments: { path: file, content: "after\n" },
+            },
+          ],
+        },
+        { text: "done", toolCalls: [] },
+      ]),
+      onApprove: async () => "allow",
+    });
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(file, "utf8")).toBe("after\n");
+  });
+
+  it("print stays fail-closed even if onApprove is passed", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-loop-"));
+    const file = path.join(tmpDir, "target.txt");
+    await writeFile(file, "before\n");
+    let asked = false;
+    const result = await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "write it",
+      print: true,
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "1",
+              name: "write",
+              arguments: { path: file, content: "nope\n" },
+            },
+          ],
+        },
+      ]),
+      onApprove: async () => {
+        asked = true;
+        return "allow";
+      },
+    });
+    expect(asked).toBe(false);
+    expect(result.exitCode).not.toBe(0);
+    expect(await readFile(file, "utf8")).toBe("before\n");
+  });
