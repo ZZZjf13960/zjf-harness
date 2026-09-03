@@ -109,3 +109,44 @@ export function renderApproval(card: ApprovalCard): string {
     .filter((line) => line.length > 0)
     .join("\n");
 }
+
+export type LiveIO = {
+  write(text: string): void;
+  readKey(): Promise<string>;
+};
+
+export async function approveLive(
+  gate: { tool: string; mode: string; body?: string },
+  io: LiveIO,
+): Promise<"allow" | "deny" | "allow-session" | "interrupt"> {
+  const card = presentApproval(gate);
+  if (!card) {
+    return "allow";
+  }
+  io.write(renderApproval(card) + "\n");
+  io.write("y allow / n deny / a session-allow / Esc interrupt\n");
+  const raw = await io.readKey();
+  const key: ApprovalKey =
+    raw === "y" || raw === "n" || raw === "a" || raw === "escape" ? raw : "n";
+  return resolveApproval(card, key).decision;
+}
+
+export type LiveLine =
+  | { type: "mode"; mode: PermissionMode }
+  | { type: "prompt"; text: string }
+  | { type: "empty" };
+
+export function handleLine(line: string, mode: string): LiveLine {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return { type: "empty" };
+  }
+  if (trimmed.startsWith("/mode")) {
+    return { type: "mode", mode: applyModeCommand(trimmed, { mode }).mode };
+  }
+  return { type: "prompt", text: trimmed };
+}
+
+export function liveBanner(mode: string): string {
+  return statusBar(mode) + "\n";
+}
