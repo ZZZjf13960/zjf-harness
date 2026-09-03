@@ -1,14 +1,12 @@
 # zjf-harness
 
-Own coding agent harness: drive LLMs through coding tasks; tools, context, sessions, permissions, and TUI.
+Own coding agent harness: drive LLMs through coding tasks.
 
-## Packages
+Empty line ends a TTY session.
+Default mode is plan (read-only).
+TTY shows a status bar. Gated tools take y, n, a, or Esc. Slash mode switches. Follow-up lines continue.
 
-- `apps/cli` — thin CLI (`--mode`, `-p` / `--print`)
-- `packages/permissions` — permission modes and auto-run gates
-- `packages/tools` — tool registry
-- `packages/rpc` — JSON-RPC server stub
-- `packages/mcp` — MCP client stub
-- `packages/tui` — TUI (runtime not changed in this scaffold)
-
-`--mode` wire names: `plan` | `accept-edits` | `bypass` (default `plan`). See [docs/specs/interaction-v0.md](docs/specs/interaction-v0.md).
+Repo: github.com/ZZZjf13960/zjf-harness
+Start the CLI package with a quoted prompt. Print mode is fail-closed.
+Spec: docs/specs/interaction-v0.md
+Live preview needs model credentials in the environment.
