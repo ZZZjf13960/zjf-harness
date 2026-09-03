@@ -68,25 +68,52 @@ describe("runLoop", () => {
     expect(await readFile(file, "utf8")).toBe("before\n");
   });
 
-  it("plan allows read; stub error is a tool result, not a permission deny", async () => {
+  it("plan allows read; file contents are a tool result, not a permission deny", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-loop-"));
+    const file = path.join(tmpDir, "note.txt");
+    await writeFile(file, "hello core\n");
     const result = await runLoop({
       session: createSession({ mode: "plan" }),
-      prompt: "read x",
+      prompt: "read it",
       print: true,
       model: fakeModel([
         {
           text: "",
-          toolCalls: [{ id: "1", name: "read", arguments: { path: "x" } }],
+          toolCalls: [{ id: "1", name: "read", arguments: { path: file } }],
         },
-        { text: "could not read", toolCalls: [] },
+        { text: "got it", toolCalls: [] },
       ]),
     });
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toMatch(/mode=plan print=true/);
+    expect(result.stdout).toMatch(/got it/);
+    const toolMsg = result.session.messages.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toMatch(/hello core/);
+  });
+
+  it("plan read of a missing path is a tool error, not a permission deny", async () => {
+    const missing = path.join(
+      os.tmpdir(),
+      "zjf-core-no-such-file-please-missing.txt",
+    );
+    const result = await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "read missing",
+      print: true,
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [{ id: "1", name: "read", arguments: { path: missing } }],
+        },
+        { text: "could not read", toolCalls: [] },
+      ]),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).not.toMatch(/approval/);
     expect(result.stdout).toMatch(/could not read/);
     const toolMsg = result.session.messages.find((m) => m.role === "tool");
-    expect(toolMsg?.content).toMatch(/not implemented/);
+    expect(toolMsg?.content).toMatch(/ENOENT|no such file|not found/i);
   });
 
   it("final text exits 0", async () => {
