@@ -78,12 +78,19 @@ function asToolName(name: string): ToolName | undefined {
 
 const MAX_TURNS = 8;
 
+export type ApprovalDecision = "allow" | "deny" | "allow-session" | "interrupt";
+
 export async function runLoop(input: {
   session: Session;
   prompt: string;
   model: ModelClient;
   print?: boolean;
   maxTurns?: number;
+  onApprove?: (gate: {
+    tool: string;
+    mode: PermissionMode;
+    body?: string;
+  }) => Promise<ApprovalDecision>;
 }): Promise<LoopResult> {
   const session = input.session;
   const print = input.print === true;
@@ -124,23 +131,58 @@ export async function runLoop(input: {
           sessionAllowed: session.sessionAllowed,
         });
       if (!allowed) {
-        let stderr =
-          "Tool '" +
-          call.name +
-          "' requires approval in mode '" +
-          session.mode +
-          "'.";
-        if (print) {
-          stderr +=
-            " Non-interactive print mode (-p) is fail-closed when approval is required.";
+        const approve = input.onApprove;
+        if (print || !approve) {
+          let stderr =
+            "Tool '" +
+            call.name +
+            "' requires approval in mode '" +
+            session.mode +
+            "'.";
+          if (print) {
+            stderr +=
+              " Non-interactive print mode (-p) is fail-closed when approval is required.";
+          }
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: stderr + "\n",
+            session,
+            gatedTool: call.name,
+          };
         }
-        return {
-          exitCode: 1,
-          stdout: "",
-          stderr: stderr + "\n",
-          session,
-          gatedTool: call.name,
-        };
+        let body: string | undefined;
+        try {
+          body = JSON.stringify(call.arguments ?? {});
+        } catch {
+          body = undefined;
+        }
+        const decision = await approve({
+          tool: call.name,
+          mode: session.mode,
+          body,
+        });
+        if (decision === "interrupt") {
+          return {
+            exitCode: 1,
+            stdout: header,
+            stderr: "interrupted\n",
+            session,
+            gatedTool: call.name,
+          };
+        }
+        if (decision === "deny") {
+          session.messages.push({
+            role: "tool",
+            toolCallId: call.id,
+            name: call.name,
+            content: "User denied this tool call.",
+          });
+          continue;
+        }
+        if (decision === "allow-session") {
+          session.sessionAllowed.add(call.name);
+        }
       }
 
       const tool = get(call.name);

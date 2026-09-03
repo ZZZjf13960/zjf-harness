@@ -8,6 +8,8 @@ import {
   renderApproval,
   resolveApproval,
   statusBar,
+  handleLine,
+  approveLive,
 } from "./index";
 
 describe("acceptPlan", () => {
@@ -107,5 +109,48 @@ describe("resolveApproval", () => {
 describe("interruptTurn", () => {
   it("marks the turn interrupted", () => {
     expect(interruptTurn()).toEqual({ interrupted: true });
+  });
+});
+
+describe("handleLine", () => {
+  it("parses /mode and leaves other text as a prompt", () => {
+    expect(handleLine("/mode accept-edits", "plan")).toEqual({
+      type: "mode",
+      mode: "accept-edits",
+    });
+    expect(handleLine("list files", "plan")).toEqual({
+      type: "prompt",
+      text: "list files",
+    });
+    expect(handleLine("  ", "plan")).toEqual({ type: "empty" });
+  });
+});
+
+describe("approveLive", () => {
+  it("renders a card and maps y/n/a/escape", async () => {
+    const writes: string[] = [];
+    const io = {
+      write(text: string) {
+        writes.push(text);
+      },
+      async readKey() {
+        return "y";
+      },
+    };
+    await expect(
+      approveLive({ tool: "bash", mode: "plan", body: "ls" }, io),
+    ).resolves.toBe("allow");
+    expect(writes.join("")).toMatch(/tool: bash/);
+    expect(writes.join("")).toMatch(/mode: plan/);
+  });
+
+  it("skips the card when auto-run", async () => {
+    const writes: string[] = [];
+    const decision = await approveLive(
+      { tool: "read", mode: "plan" },
+      { write: (t) => writes.push(t), readKey: async () => "n" },
+    );
+    expect(decision).toBe("allow");
+    expect(writes).toEqual([]);
   });
 });
