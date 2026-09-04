@@ -6,6 +6,12 @@ import {
 } from "@zjf-harness/permissions";
 
 export type { PermissionMode };
+export { NativeTerminalTui } from "./native.ts";
+export type {
+  NativeTerminalOptions,
+  TuiInputEvent,
+  TuiMessageRole,
+} from "./native.ts";
 
 export type SessionState = { mode: PermissionMode };
 
@@ -48,6 +54,7 @@ function asTool(tool: string): ToolName | undefined {
 }
 
 export type ApprovalAction = "allow" | "deny" | "allow-session";
+export type ApprovalDecision = ApprovalAction | "interrupt";
 export type ApprovalKey = "y" | "n" | "a" | "escape";
 
 export type ApprovalCard = {
@@ -83,7 +90,7 @@ export function presentApproval(input: {
 export function resolveApproval(
   card: ApprovalCard,
   key: ApprovalKey,
-): { decision: ApprovalAction | "interrupt"; sessionTool?: string } {
+): { decision: ApprovalDecision; sessionTool?: string } {
   if (key === "escape") {
     return { decision: "interrupt" };
   }

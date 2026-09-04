@@ -36,6 +36,7 @@ export type ModelClient = {
       description: string;
       parameters?: Record<string, unknown>;
     }[];
+    signal?: AbortSignal;
   }): Promise<ModelTurn>;
 };
 
@@ -86,6 +87,7 @@ export async function runLoop(input: {
   model: ModelClient;
   print?: boolean;
   maxTurns?: number;
+  signal?: AbortSignal;
   onApprove?: (gate: {
     tool: string;
     mode: PermissionMode;
@@ -99,6 +101,14 @@ export async function runLoop(input: {
 
   const maxTurns = input.maxTurns ?? MAX_TURNS;
   for (let turn = 0; turn < maxTurns; turn++) {
+    if (input.signal?.aborted) {
+      return {
+        exitCode: 1,
+        stdout: header,
+        stderr: "interrupted\n",
+        session,
+      };
+    }
     const tools = list().map((tool) => ({
       name: tool.name,
       description: tool.description,
@@ -107,6 +117,7 @@ export async function runLoop(input: {
     const reply = await input.model.complete({
       messages: session.messages,
       tools,
+      signal: input.signal,
     });
 
     session.messages.push({
@@ -279,6 +290,7 @@ export function createOpenAIClient(
           authorization: "Bearer " + apiKey,
         },
         body: JSON.stringify(body),
+        signal: input.signal,
       });
       if (!response.ok) {
         const errText = await response.text();
