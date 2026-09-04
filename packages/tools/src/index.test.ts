@@ -7,6 +7,10 @@ import {
   list,
   writeSync,
   editSync,
+  editHandler,
+  formatUnifiedDiff,
+  previewEdit,
+  previewWrite,
   bashSync,
   bashHandler,
   readSync,
@@ -127,12 +131,16 @@ describe("tools", () => {
           type: "string",
           description: expect.any(String),
         },
-        content: {
+        oldText: {
+          type: "string",
+          description: expect.any(String),
+        },
+        newText: {
           type: "string",
           description: expect.any(String),
         },
       },
-      required: ["path", "content"],
+      required: ["path", "oldText", "newText"],
     });
   });
 
@@ -350,22 +358,173 @@ describe("tools", () => {
     expect(await readFile(file, "utf8")).toBe("after\n");
   });
 
-  it("edit tool edits content asynchronously", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
-    const file = path.join(tmpDir, "out.txt");
-    const editTool = get("edit");
-    expect(editTool).toBeDefined();
-    await editTool!.run({ path: file, content: "edited content\n" });
-    expect(await readFile(file, "utf8")).toBe("edited content\n");
+  describe("edit tool", () => {
+    it("edit replaces only oldText once synchronously and asynchronously", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      const file = path.join(tmpDir, "sample.txt");
+      await writeFile(file, "line 1\nold text here\nline 3\nold text here\n", "utf8");
+
+      // Test editSync: replaces only the first occurrence of oldText
+      const syncRes = editSync({
+        path: file,
+        oldText: "old text here",
+        newText: "new text here",
+      });
+      expect(syncRes.success).toBe(true);
+      expect(syncRes.path).toBe(file);
+      expect(syncRes.diff).toContain("-old text here");
+      expect(syncRes.diff).toContain("+new text here");
+
+      const afterSync = await readFile(file, "utf8");
+      expect(afterSync).toBe("line 1\nnew text here\nline 3\nold text here\n");
+
+      // Test editHandler / registry run
+      const editTool = get("edit");
+      expect(editTool).toBeDefined();
+      const asyncRes = (await editTool!.run({
+        path: file,
+        oldText: "old text here",
+        newText: "second replaced",
+      })) as { success: boolean; path: string; diff: string };
+
+      expect(asyncRes.success).toBe(true);
+      expect(asyncRes.path).toBe(file);
+      expect(asyncRes.diff).toContain("-old text here");
+      expect(asyncRes.diff).toContain("+second replaced");
+
+      const afterAsync = await readFile(file, "utf8");
+      expect(afterAsync).toBe("line 1\nnew text here\nline 3\nsecond replaced\n");
+    });
+
+    it("missing oldText fails with clear error", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      const file = path.join(tmpDir, "sample.txt");
+      await writeFile(file, "existing content\n", "utf8");
+
+      expect(() => editSync({ path: file, newText: "abc" })).toThrow(/Missing oldText/);
+      expect(() => editSync({ path: file })).toThrow(/Missing oldText/);
+      expect(() => editSync(file)).toThrow(/Invalid arguments/);
+      await expect(editHandler({ path: file, newText: "abc" })).rejects.toThrow(/Missing oldText/);
+    });
+
+    it("oldText not found in file fails with clear error without overwriting file", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      const file = path.join(tmpDir, "sample.txt");
+      await writeFile(file, "original content\n", "utf8");
+
+      expect(() =>
+        editSync({
+          path: file,
+          oldText: "not in file",
+          newText: "replacement",
+        }),
+      ).toThrow(/oldText not found/);
+
+      await expect(
+        editHandler({
+          path: file,
+          oldText: "not in file",
+          newText: "replacement",
+        }),
+      ).rejects.toThrow(/oldText not found/);
+
+      expect(await readFile(file, "utf8")).toBe("original content\n");
+    });
+
+    it("returns unified diff containing -/+ lines", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      const file = path.join(tmpDir, "diff_target.txt");
+      await writeFile(file, "alpha\nbeta\ngamma\n", "utf8");
+
+      const res = editSync({
+        path: file,
+        oldText: "beta",
+        newText: "beta-modified",
+      });
+      expect(res.diff).toContain("--- a/");
+      expect(res.diff).toContain("+++ b/");
+      expect(res.diff).toMatch(/@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/);
+      expect(res.diff).toContain("-beta");
+      expect(res.diff).toContain("+beta-modified");
+      expect(res.diff).toContain(" alpha");
+      expect(res.diff).toContain(" gamma");
+    });
+
+    it("accepts filePath and file as path aliases", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      const file1 = path.join(tmpDir, "alias1.txt");
+      const file2 = path.join(tmpDir, "alias2.txt");
+      await writeFile(file1, "foo\n", "utf8");
+      await writeFile(file2, "bar\n", "utf8");
+
+      editSync({ filePath: file1, oldText: "foo", newText: "foo2" });
+      expect(await readFile(file1, "utf8")).toBe("foo2\n");
+
+      await editHandler({ file: file2, oldText: "bar", newText: "bar2" });
+      expect(await readFile(file2, "utf8")).toBe("bar2\n");
+    });
   });
 
-  it("writeSync and editSync work synchronously", async () => {
+  describe("preview without apply", () => {
+    it("previewEdit does not mutate file", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      const file = path.join(tmpDir, "preview.txt");
+      await writeFile(file, "original unmutated\n", "utf8");
+
+      const diff = previewEdit({
+        path: file,
+        oldText: "original unmutated",
+        newText: "previewed change",
+      });
+
+      expect(diff).toContain("--- a/");
+      expect(diff).toContain("+++ b/");
+      expect(diff).toContain("-original unmutated");
+      expect(diff).toContain("+previewed change");
+
+      // Verify file is untouched
+      expect(await readFile(file, "utf8")).toBe("original unmutated\n");
+    });
+
+    it("previewWrite diffs existing file contents or empty if missing without mutating", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      const missingFile = path.join(tmpDir, "missing.txt");
+      const diffNew = previewWrite({ path: missingFile, content: "hello new\n" });
+      expect(diffNew).toContain("--- a/");
+      expect(diffNew).toContain("+++ b/");
+      expect(diffNew).toContain("+hello new");
+      expect(diffNew).toMatch(/@@ -0,0 \+1/);
+
+      // Verify missing file was NOT created
+      const exists = await readFile(missingFile, "utf8").then(
+        () => true,
+        () => false,
+      );
+      expect(exists).toBe(false);
+
+      // Test existing file
+      const existingFile = path.join(tmpDir, "existing.txt");
+      await writeFile(existingFile, "before write\n", "utf8");
+      const diffExisting = previewWrite({ path: existingFile, content: "after write\n" });
+      expect(diffExisting).toContain("-before write");
+      expect(diffExisting).toContain("+after write");
+      expect(await readFile(existingFile, "utf8")).toBe("before write\n");
+    });
+
+    it("formatUnifiedDiff formats unified diff and returns empty string if no diff", () => {
+      const diff = formatUnifiedDiff("foo/bar.txt", "line1\nline2\n", "line1\nchanged\n");
+      expect(diff).toContain("--- a/foo/bar.txt\n+++ b/foo/bar.txt\n");
+      expect(diff).toContain("-line2\n+changed\n");
+      expect(diff).toContain(" line1\n");
+
+      expect(formatUnifiedDiff("foo/bar.txt", "same\n", "same\n")).toBe("");
+    });
+  });
+
+  it("writeSync works synchronously", async () => {
     tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
     const file1 = path.join(tmpDir, "sync1.txt");
-    const file2 = path.join(tmpDir, "sync2.txt");
     writeSync(file1);
     expect(await readFile(file1, "utf8")).toBe("after\n");
-    editSync(file2);
-    expect(await readFile(file2, "utf8")).toBe("after\n");
   });
 });
