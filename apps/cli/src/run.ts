@@ -20,7 +20,14 @@ import {
   runLoop,
   type ModelClient,
 } from "@zjf-harness/core";
-import { approveLive, handleLine, liveBanner } from "@zjf-harness/tui";
+import {
+  NativeTerminalTui,
+  approveLive,
+  handleLine,
+  liveBanner,
+  type ApprovalDecision,
+  type TuiInputEvent,
+} from "@zjf-harness/tui";
 import readline from "node:readline";
 
 export type CliResult = {
@@ -497,6 +504,124 @@ export function shouldRunPreview(argv: string[]): boolean {
   if (isOneShotTool(argv)) return false;
   if (argv.includes("-h") || argv.includes("--help")) return false;
   return previewPrompt(argv) !== undefined;
+}
+
+export function shouldRunTui(
+  argv: string[],
+  isTTY = Boolean(process.stdin.isTTY && process.stdout.isTTY),
+): boolean {
+  if (!isTTY) return false;
+  if (isOneShotTool(argv)) return false;
+  if (argv.includes("-h") || argv.includes("--help")) return false;
+  if (argv.includes("-p") || argv.includes("--print")) return false;
+  return true;
+}
+
+export type TerminalUi = {
+  open(mode: PermissionMode): void;
+  close(): void;
+  setMode(mode: PermissionMode): void;
+  addMessage(role: "user" | "assistant" | "system", text: string): void;
+  setBusy(busy: boolean, interrupt?: () => void): void;
+  readInput(): Promise<TuiInputEvent>;
+  approve(input: {
+    tool: string;
+    mode: PermissionMode;
+    body?: string;
+  }): Promise<ApprovalDecision>;
+};
+
+function resultText(value: string): string {
+  return value.replace(/^mode=\S+\s+print=(?:true|false)\n/, "").trim();
+}
+
+export async function runTui(
+  argv: string[],
+  model?: ModelClient,
+  ui: TerminalUi = new NativeTerminalTui(),
+): Promise<CliResult> {
+  const parsed = runCli(withoutPrompt(argv));
+  if (parsed.exitCode !== 0) return parsed;
+
+  const mode = parsePermissionMode(
+    parsed.stdout.match(/mode=(\S+)/)?.[1] ?? DEFAULT_PERMISSION_MODE,
+  );
+  const session = createSession({ mode });
+  const client = model ?? createOpenAIClient();
+  let prompt = previewPrompt(argv);
+  let lastExitCode = 0;
+
+  ui.open(session.mode);
+  ui.addMessage(
+    "system",
+    "Interactive terminal ready. Type a request, use Shift+Tab or /mode to change mode, and press Esc to exit.",
+  );
+
+  try {
+    while (true) {
+      if (!prompt) {
+        const event = await ui.readInput();
+        if (event.type === "exit") {
+          return { exitCode: lastExitCode, stdout: "", stderr: "" };
+        }
+        if (event.type === "mode") {
+          session.mode = event.mode;
+          ui.setMode(session.mode);
+          continue;
+        }
+        const handled = handleLine(event.text, session.mode);
+        if (handled.type === "empty") {
+          return { exitCode: lastExitCode, stdout: "", stderr: "" };
+        }
+        if (handled.type === "mode") {
+          session.mode = handled.mode;
+          ui.setMode(session.mode);
+          ui.addMessage("system", "Mode changed to " + session.mode + ".");
+          continue;
+        }
+        prompt = handled.text;
+      }
+
+      const currentPrompt = prompt;
+      prompt = undefined;
+      ui.addMessage("user", currentPrompt);
+      const controller = new AbortController();
+      ui.setBusy(true, () => controller.abort());
+
+      try {
+        const result = await runLoop({
+          session,
+          prompt: currentPrompt,
+          model: client,
+          signal: controller.signal,
+          onApprove: (gate) => ui.approve(gate),
+        });
+        lastExitCode = result.exitCode;
+        const answer = resultText(result.stdout);
+        if (answer) ui.addMessage("assistant", answer);
+        const error = result.stderr.trim();
+        if (error) {
+          ui.addMessage(
+            "system",
+            error === "interrupted" ? "Turn interrupted." : error,
+          );
+        }
+      } catch (err) {
+        const message =
+          controller.signal.aborted
+            ? "Turn interrupted."
+            : err instanceof Error
+              ? err.message
+              : String(err);
+        lastExitCode = controller.signal.aborted ? 0 : 1;
+        ui.addMessage("system", message);
+      } finally {
+        ui.setBusy(false);
+      }
+    }
+  } finally {
+    ui.close();
+  }
 }
 
 export async function runPreview(

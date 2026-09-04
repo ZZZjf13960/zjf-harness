@@ -1,8 +1,20 @@
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { runCli, runPreview, shouldRunPreview } from "./run";
+import {
+  runCli,
+  runPreview,
+  runTui,
+  shouldRunPreview,
+  shouldRunTui,
+} from "./run.ts";
 
-export { runCli, runPreview, shouldRunPreview } from "./run";
+export {
+  runCli,
+  runPreview,
+  runTui,
+  shouldRunPreview,
+  shouldRunTui,
+} from "./run.ts";
 export type { CliResult } from "./run";
 
 function isDirectRun(): boolean {
@@ -13,7 +25,11 @@ function isDirectRun(): boolean {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
-  const result = shouldRunPreview(argv) ? await runPreview(argv) : runCli(argv);
+  const result = shouldRunTui(argv)
+    ? await runTui(argv)
+    : shouldRunPreview(argv)
+      ? await runPreview(argv)
+      : runCli(argv);
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
   process.exit(result.exitCode);
