@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@zjf-harness/cli": "workspace:*",
+    "@zjf-harness/core": "workspace:*",
     "@zjf-harness/permissions": "workspace:*",
     "@zjf-harness/tui": "workspace:*"
   },
