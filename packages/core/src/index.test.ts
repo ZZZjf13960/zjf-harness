@@ -197,7 +197,7 @@ describe("runLoop", () => {
             {
               id: "edit-1",
               name: "edit",
-              arguments: { path: file, content: "nope\n" },
+              arguments: { path: file, oldText: "before\n", newText: "nope\n" },
             },
           ],
         },
@@ -284,7 +284,7 @@ describe("runLoop", () => {
             {
               id: "edit-1",
               name: "edit",
-              arguments: { path: file, content: "after edit\n" },
+              arguments: { path: file, oldText: "before edit", newText: "after edit" },
             },
           ],
         },
@@ -300,6 +300,8 @@ describe("runLoop", () => {
     const parsed = JSON.parse(toolMsg?.content ?? "{}");
     expect(parsed.success).toBe(true);
     expect(parsed.path).toBe(file);
+    expect(parsed.diff).toContain("-before edit");
+    expect(parsed.diff).toContain("+after edit");
   });
 
   it("accept-edits leaves bash gated and does not execute command", async () => {
@@ -455,6 +457,165 @@ describe("runLoop", () => {
     expect(await readFile(file, "utf8")).toBe("before\n");
   });
 
+  it("gated edit under plan with onApprove receives body containing the unified diff; after deny file unchanged", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-edit-gate-"));
+    const file = path.join(tmpDir, "target.txt");
+    await writeFile(file, "original text\n");
+
+    let receivedGate: { tool: string; mode: string; body?: string } | undefined;
+    const resultDeny = await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "edit it",
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "edit-1",
+              name: "edit",
+              arguments: { path: file, oldText: "original text", newText: "modified text" },
+            },
+          ],
+        },
+        { text: "stop after deny", toolCalls: [] },
+      ]),
+      onApprove: async (gate) => {
+        receivedGate = gate;
+        return "deny";
+      },
+    });
+
+    expect(receivedGate?.tool).toBe("edit");
+    expect(receivedGate?.mode).toBe("plan");
+    expect(receivedGate?.body).toContain("--- a/");
+    expect(receivedGate?.body).toContain("+++ b/");
+    expect(receivedGate?.body).toMatch(/@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@/);
+    expect(receivedGate?.body).toContain("-original text");
+    expect(receivedGate?.body).toContain("+modified text");
+    // After deny, file unchanged:
+    expect(await readFile(file, "utf8")).toBe("original text\n");
+
+    // Allow decision applies the edit:
+    const resultAllow = await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "edit it again",
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "edit-2",
+              name: "edit",
+              arguments: { path: file, oldText: "original text", newText: "modified text" },
+            },
+          ],
+        },
+        { text: "done", toolCalls: [] },
+      ]),
+      onApprove: async () => "allow",
+    });
+    expect(resultAllow.exitCode).toBe(0);
+    expect(await readFile(file, "utf8")).toBe("modified text\n");
+  });
+
+  it("accept-edits auto-applies edit without needing onApprove", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-accept-auto-"));
+    const file = path.join(tmpDir, "auto.txt");
+    await writeFile(file, "line1\nold line\nline3\n");
+
+    let approvalCalled = false;
+    const result = await runLoop({
+      session: createSession({ mode: "accept-edits" }),
+      prompt: "edit file",
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "edit-auto",
+              name: "edit",
+              arguments: { path: file, oldText: "old line", newText: "new line" },
+            },
+          ],
+        },
+        { text: "done", toolCalls: [] },
+      ]),
+      onApprove: async () => {
+        approvalCalled = true;
+        return "deny";
+      },
+    });
+
+    expect(approvalCalled).toBe(false);
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(file, "utf8")).toBe("line1\nnew line\nline3\n");
+  });
+
+  it("gated write under plan with onApprove receives body containing the unified diff", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-write-gate-"));
+    const file = path.join(tmpDir, "target.txt");
+    await writeFile(file, "initial\n");
+
+    let receivedGate: { tool: string; mode: string; body?: string } | undefined;
+    await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "write file",
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "write-1",
+              name: "write",
+              arguments: { path: file, content: "updated\n" },
+            },
+          ],
+        },
+        { text: "done", toolCalls: [] },
+      ]),
+      onApprove: async (gate) => {
+        receivedGate = gate;
+        return "deny";
+      },
+    });
+
+    expect(receivedGate?.tool).toBe("write");
+    expect(receivedGate?.body).toContain("-initial");
+    expect(receivedGate?.body).toContain("+updated");
+    expect(await readFile(file, "utf8")).toBe("initial\n");
+  });
+
+  it("falls back to JSON arguments when previewEdit throws on invalid args", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-fallback-"));
+    const file = path.join(tmpDir, "target.txt");
+    await writeFile(file, "initial\n");
+
+    let receivedGate: { tool: string; mode: string; body?: string } | undefined;
+    await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "edit bad",
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "edit-bad",
+              name: "edit",
+              arguments: { path: file, missingOldText: true },
+            },
+          ],
+        },
+        { text: "done", toolCalls: [] },
+      ]),
+      onApprove: async (gate) => {
+        receivedGate = gate;
+        return "deny";
+      },
+    });
+
+    expect(receivedGate?.tool).toBe("edit");
+    expect(receivedGate?.body).toBe(JSON.stringify({ path: file, missingOldText: true }));
+  });
 });
 
 describe("createOpenAIClient", () => {

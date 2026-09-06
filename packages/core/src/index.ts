@@ -5,7 +5,7 @@ import {
   type PermissionMode,
   type ToolName,
 } from "@zjf-harness/permissions";
-import { get, list } from "@zjf-harness/tools";
+import { get, list, previewEdit, previewWrite } from "@zjf-harness/tools";
 
 export type { PermissionMode };
 
@@ -163,10 +163,32 @@ export async function runLoop(input: {
           };
         }
         let body: string | undefined;
-        try {
-          body = JSON.stringify(call.arguments ?? {});
-        } catch {
-          body = undefined;
+        if (call.name === "edit") {
+          try {
+            body = previewEdit(call.arguments);
+          } catch {
+            try {
+              body = JSON.stringify(call.arguments ?? {});
+            } catch {
+              body = undefined;
+            }
+          }
+        } else if (call.name === "write") {
+          try {
+            body = previewWrite(call.arguments);
+          } catch {
+            try {
+              body = JSON.stringify(call.arguments ?? {});
+            } catch {
+              body = undefined;
+            }
+          }
+        } else {
+          try {
+            body = JSON.stringify(call.arguments ?? {});
+          } catch {
+            body = undefined;
+          }
         }
         const decision = await approve({
           tool: call.name,

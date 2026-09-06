@@ -14,7 +14,7 @@ export type Tool = {
   parameters?: Record<string, unknown>;
 };
 
-export type FileToolArgs =
+export type WriteToolArgs =
   | string
   | {
       path?: string;
@@ -22,9 +22,25 @@ export type FileToolArgs =
       file?: string;
       content?: string;
       text?: string;
-      newText?: string;
-      oldText?: string;
     };
+
+export type EditToolArgs = {
+  path?: string;
+  filePath?: string;
+  file?: string;
+  oldText?: string;
+  newText?: string;
+  content?: string;
+  text?: string;
+};
+
+export type FileToolArgs = WriteToolArgs | EditToolArgs;
+
+export type EditResult = {
+  success: boolean;
+  path: string;
+  diff: string;
+};
 
 export type ReadToolArgs =
   | string
@@ -338,16 +354,6 @@ export function writeSync(args: unknown): { success: boolean; path: string } {
   return { success: true, path: targetPath };
 }
 
-export function editSync(args: unknown): { success: boolean; path: string } {
-  const { targetPath, content } = extractPathAndContent(args);
-  const dir = path.dirname(targetPath);
-  if (dir && !fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-  fs.writeFileSync(targetPath, content, "utf8");
-  return { success: true, path: targetPath };
-}
-
 export async function writeHandler(args: unknown): Promise<{ success: boolean; path: string }> {
   const { targetPath, content } = extractPathAndContent(args);
   const dir = path.dirname(targetPath);
@@ -358,15 +364,254 @@ export async function writeHandler(args: unknown): Promise<{ success: boolean; p
   return { success: true, path: targetPath };
 }
 
-export async function editHandler(args: unknown): Promise<{ success: boolean; path: string }> {
+function extractEditArgs(args: unknown): {
+  targetPath: string;
+  oldText: string;
+  newText: string;
+} {
+  if (typeof args !== "object" || args === null) {
+    throw new Error("Invalid arguments for edit tool: expected object with path, oldText, newText");
+  }
+  const obj = args as Record<string, unknown>;
+  const targetPath = (obj.path ?? obj.filePath ?? obj.file) as string | undefined;
+  if (!targetPath || typeof targetPath !== "string") {
+    throw new Error("Missing file path for edit tool");
+  }
+  if (obj.oldText === undefined || typeof obj.oldText !== "string") {
+    throw new Error("Missing oldText for edit tool");
+  }
+  const newText = obj.newText !== undefined ? obj.newText : (obj.content ?? obj.text);
+  if (newText === undefined || typeof newText !== "string") {
+    throw new Error("Missing newText for edit tool");
+  }
+  return {
+    targetPath,
+    oldText: obj.oldText,
+    newText: String(newText),
+  };
+}
+
+function splitLines(text: string): string[] {
+  if (text.length === 0) return [];
+  const lines = text.split(/\r?\n/);
+  if (lines.length > 0 && lines[lines.length - 1] === "") {
+    lines.pop();
+  }
+  return lines;
+}
+
+function myersDiff(
+  a: string[],
+  b: string[],
+): Array<{ type: "keep" | "insert" | "delete"; line: string }> {
+  const n = a.length;
+  const m = b.length;
+  const max = n + m;
+  const v: number[] = new Array(2 * max + 1).fill(0);
+  const trace: number[][] = [];
+
+  v[max + 1] = 0;
+
+  let reachedD = -1;
+  for (let d = 0; d <= max; d++) {
+    trace.push([...v]);
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && v[max + k - 1]! < v[max + k + 1]!)) {
+        x = v[max + k + 1]!;
+      } else {
+        x = v[max + k - 1]! + 1;
+      }
+      let y = x - k;
+      while (x < n && y < m && a[x] === b[y]) {
+        x++;
+        y++;
+      }
+      v[max + k] = x;
+      if (x >= n && y >= m) {
+        reachedD = d;
+        break;
+      }
+    }
+    if (reachedD !== -1) break;
+  }
+
+  const script: Array<{ type: "keep" | "insert" | "delete"; line: string }> = [];
+  let x = n;
+  let y = m;
+  for (let d = reachedD; d > 0; d--) {
+    const prevV = trace[d]!;
+    const k = x - y;
+    let prevK: number;
+    if (k === -d || (k !== d && prevV[max + k - 1]! < prevV[max + k + 1]!)) {
+      prevK = k + 1;
+    } else {
+      prevK = k - 1;
+    }
+    const prevX = prevV[max + prevK]!;
+    const prevY = prevX - prevK;
+
+    while (x > prevX && y > prevY) {
+      script.push({ type: "keep", line: a[x - 1]! });
+      x--;
+      y--;
+    }
+    if (x === prevX) {
+      script.push({ type: "insert", line: b[prevY]! });
+      y--;
+    } else {
+      script.push({ type: "delete", line: a[prevX]! });
+      x--;
+    }
+  }
+  while (x > 0 && y > 0) {
+    script.push({ type: "keep", line: a[x - 1]! });
+    x--;
+    y--;
+  }
+  script.reverse();
+  return script;
+}
+
+function formatRange(start: number, count: number): string {
+  if (count === 1) return `${start}`;
+  return `${start},${count}`;
+}
+
+export function formatUnifiedDiff(
+  filePath: string,
+  before: string,
+  after: string,
+): string {
+  if (before === after) return "";
+  const a = splitLines(before);
+  const b = splitLines(after);
+  const script = myersDiff(a, b);
+
+  const editIndices: number[] = [];
+  for (let i = 0; i < script.length; i++) {
+    if (script[i]!.type !== "keep") {
+      editIndices.push(i);
+    }
+  }
+  if (editIndices.length === 0) return "";
+
+  const context = 3;
+  const groups: number[][] = [];
+  let currentGroup = [editIndices[0]!];
+  for (let i = 1; i < editIndices.length; i++) {
+    const prev = editIndices[i - 1]!;
+    const curr = editIndices[i]!;
+    if (curr - prev <= 2 * context) {
+      currentGroup.push(curr);
+    } else {
+      groups.push(currentGroup);
+      currentGroup = [curr];
+    }
+  }
+  groups.push(currentGroup);
+
+  const cleanPath = filePath.replace(/^(\.\/|\/)+/, "");
+  let result = `--- a/${cleanPath}\n+++ b/${cleanPath}\n`;
+
+  for (const group of groups) {
+    const firstEdit = group[0]!;
+    const lastEdit = group[group.length - 1]!;
+    const startIdx = Math.max(0, firstEdit - context);
+    const endIdx = Math.min(script.length - 1, lastEdit + context);
+
+    let oldCount = 0;
+    let newCount = 0;
+    let oldLineNum = 0;
+    let newLineNum = 0;
+
+    for (let i = 0; i < startIdx; i++) {
+      if (script[i]!.type === "keep" || script[i]!.type === "delete") oldLineNum++;
+      if (script[i]!.type === "keep" || script[i]!.type === "insert") newLineNum++;
+    }
+
+    const hunkLines: string[] = [];
+    for (let i = startIdx; i <= endIdx; i++) {
+      const item = script[i]!;
+      if (item.type === "keep") {
+        oldCount++;
+        newCount++;
+        hunkLines.push(" " + item.line);
+      } else if (item.type === "delete") {
+        oldCount++;
+        hunkLines.push("-" + item.line);
+      } else if (item.type === "insert") {
+        newCount++;
+        hunkLines.push("+" + item.line);
+      }
+    }
+
+    const oldStart = oldCount === 0 ? 0 : oldLineNum + 1;
+    const newStart = newCount === 0 ? 0 : newLineNum + 1;
+
+    result += `@@ -${formatRange(oldStart, oldCount)} +${formatRange(newStart, newCount)} @@\n`;
+    result += hunkLines.join("\n") + "\n";
+  }
+
+  return result;
+}
+
+export function previewEdit(args: unknown): string {
+  const { targetPath, oldText, newText } = extractEditArgs(args);
+  const before = fs.readFileSync(targetPath, "utf8");
+  const index = before.indexOf(oldText);
+  if (index === -1) {
+    throw new Error(`oldText not found in file: ${targetPath}`);
+  }
+  const after = before.slice(0, index) + newText + before.slice(index + oldText.length);
+  return formatUnifiedDiff(targetPath, before, after);
+}
+
+export function previewWrite(args: unknown): string {
   const { targetPath, content } = extractPathAndContent(args);
+  let before = "";
+  try {
+    before = fs.readFileSync(targetPath, "utf8");
+  } catch {
+    before = "";
+  }
+  return formatUnifiedDiff(targetPath, before, content);
+}
+
+export function editSync(args: unknown): EditResult {
+  const { targetPath, oldText, newText } = extractEditArgs(args);
+  const before = fs.readFileSync(targetPath, "utf8");
+  const index = before.indexOf(oldText);
+  if (index === -1) {
+    throw new Error(`oldText not found in file: ${targetPath}`);
+  }
+  const after = before.slice(0, index) + newText + before.slice(index + oldText.length);
+  const diff = formatUnifiedDiff(targetPath, before, after);
+  const dir = path.dirname(targetPath);
+  if (dir && !fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+  fs.writeFileSync(targetPath, after, "utf8");
+  return { success: true, path: targetPath, diff };
+}
+
+export async function editHandler(args: unknown): Promise<EditResult> {
+  const { targetPath, oldText, newText } = extractEditArgs(args);
+  const before = await readFile(targetPath, "utf8");
+  const index = before.indexOf(oldText);
+  if (index === -1) {
+    throw new Error(`oldText not found in file: ${targetPath}`);
+  }
+  const after = before.slice(0, index) + newText + before.slice(index + oldText.length);
+  const diff = formatUnifiedDiff(targetPath, before, after);
   const dir = path.dirname(targetPath);
   if (dir) {
     await mkdir(dir, { recursive: true });
   }
-  await writeFile(targetPath, content, "utf8");
-  return { success: true, path: targetPath };
+  await writeFile(targetPath, after, "utf8");
+  return { success: true, path: targetPath, diff };
 }
+
 
 const registry = new Map<string, Tool>();
 
@@ -488,7 +733,7 @@ register({
 
 register({
   name: "edit",
-  description: "Edit a file",
+  description: "Edit a file by replacing oldText with newText",
   parameters: {
     type: "object",
     properties: {
@@ -496,12 +741,16 @@ register({
         type: "string",
         description: "Path to the file to edit",
       },
-      content: {
+      oldText: {
         type: "string",
-        description: "Content to write to the file",
+        description: "Exact text to be replaced",
+      },
+      newText: {
+        type: "string",
+        description: "New text to replace oldText with",
       },
     },
-    required: ["path", "content"],
+    required: ["path", "oldText", "newText"],
   },
   run: editHandler,
 });

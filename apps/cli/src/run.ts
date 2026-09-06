@@ -322,7 +322,8 @@ export function runCli(argv: string[]): CliResult {
         if (requestedTool === "write") {
           writeSync(targetPath);
         } else {
-          editSync(targetPath);
+          const oldText = readSync(targetPath);
+          editSync({ path: targetPath, oldText, newText: "after\n" });
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
