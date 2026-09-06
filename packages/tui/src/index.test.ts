@@ -104,6 +104,18 @@ describe("resolveApproval", () => {
     expect(text).toMatch(/允许/);
     expect(text).toMatch(/拒绝/);
   });
+
+  it("render shows unified diff body for edit approvals", () => {
+    const editCard = presentApproval({
+      tool: "edit",
+      mode: "plan",
+      body: "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n",
+    })!;
+    const text = renderApproval(editCard);
+    expect(text).toMatch(/--- a\/x/);
+    expect(text).toMatch(/\+new/);
+    expect(text).toMatch(/-old/);
+  });
 });
 
 describe("interruptTurn", () => {
@@ -123,6 +135,12 @@ describe("handleLine", () => {
       text: "list files",
     });
     expect(handleLine("  ", "plan")).toEqual({ type: "empty" });
+  });
+
+  it("accept-plan and keep-plan do not write", () => {
+    expect(handleLine("/accept", "plan")).toEqual({ type: "accept-plan" });
+    expect(handleLine("/accept-plan", "plan")).toEqual({ type: "accept-plan" });
+    expect(handleLine("/keep", "plan")).toEqual({ type: "keep-plan" });
   });
 });
 

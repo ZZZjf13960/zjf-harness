@@ -140,6 +140,8 @@ export async function approveLive(
 
 export type LiveLine =
   | { type: "mode"; mode: PermissionMode }
+  | { type: "accept-plan" }
+  | { type: "keep-plan" }
   | { type: "prompt"; text: string }
   | { type: "empty" };
 
@@ -147,6 +149,14 @@ export function handleLine(line: string, mode: string): LiveLine {
   const trimmed = line.trim();
   if (!trimmed) {
     return { type: "empty" };
+  }
+  if (trimmed === "/accept" || trimmed === "/accept-plan") {
+    parsePermissionMode(mode);
+    return { type: "accept-plan" };
+  }
+  if (trimmed === "/keep" || trimmed === "/keep-plan") {
+    parsePermissionMode(mode);
+    return { type: "keep-plan" };
   }
   if (trimmed.startsWith("/mode")) {
     return { type: "mode", mode: applyModeCommand(trimmed, { mode }).mode };

@@ -22,6 +22,7 @@ import {
 } from "@zjf-harness/core";
 import {
   NativeTerminalTui,
+  acceptPlan,
   approveLive,
   handleLine,
   liveBanner,
@@ -555,7 +556,7 @@ export async function runTui(
   ui.open(session.mode);
   ui.addMessage(
     "system",
-    "Interactive terminal ready. Type a request, use Shift+Tab or /mode to change mode, and press Esc to exit.",
+    "Interactive terminal ready. Shift+Tab or /mode changes mode. /accept runs the plan in accept-edits. /keep keeps the plan without writing. Esc exits.",
   );
 
   try {
@@ -578,6 +579,22 @@ export async function runTui(
           session.mode = handled.mode;
           ui.setMode(session.mode);
           ui.addMessage("system", "Mode changed to " + session.mode + ".");
+          continue;
+        }
+        if (handled.type === "accept-plan") {
+          session.mode = acceptPlan({ mode: session.mode }).mode;
+          ui.setMode(session.mode);
+          ui.addMessage(
+            "system",
+            "Plan accepted. Mode is now " + session.mode + ".",
+          );
+          continue;
+        }
+        if (handled.type === "keep-plan") {
+          ui.addMessage(
+            "system",
+            "Plan kept. Mode stays " + session.mode + "; nothing written.",
+          );
           continue;
         }
         prompt = handled.text;
@@ -723,6 +740,15 @@ export async function runPreview(
       if (handled.type === "mode") {
         session.mode = handled.mode;
         write("mode=" + session.mode + "\n");
+        continue;
+      }
+      if (handled.type === "accept-plan") {
+        session.mode = acceptPlan({ mode: session.mode }).mode;
+        write("mode=" + session.mode + "\n");
+        continue;
+      }
+      if (handled.type === "keep-plan") {
+        write("plan kept mode=" + session.mode + "\n");
         continue;
       }
       last = await once(handled.text);

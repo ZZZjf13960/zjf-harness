@@ -90,6 +90,30 @@ const TOOLS: readonly ToolName[] = [
   "grep",
 ];
 
+
+function formatApprovalBody(body: string, width: number): string[] {
+  const lines: string[] = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const color =
+      raw.startsWith("+") && !raw.startsWith("+++")
+        ? GREEN
+        : raw.startsWith("-") && !raw.startsWith("---")
+          ? RED
+          : raw.startsWith("@@")
+            ? CYAN
+            : "";
+    const chunks = wrap(raw, width);
+    if (chunks.length === 0) {
+      lines.push("");
+      continue;
+    }
+    for (const chunk of chunks) {
+      lines.push(color ? color + chunk + RESET : chunk);
+    }
+  }
+  return lines;
+}
+
 function nextMode(mode: PermissionMode): PermissionMode {
   return MODES[(MODES.indexOf(mode) + 1) % MODES.length]!;
 }
@@ -304,7 +328,10 @@ export class NativeTerminalTui {
       history.push(YELLOW + BOLD + " Approval required" + RESET);
       history.push(" tool: " + this.approval.tool);
       history.push(" mode: " + this.approval.mode);
-      for (const line of wrap(this.approval.body, Math.max(10, inner - 2))) {
+      for (const line of formatApprovalBody(
+        this.approval.body,
+        Math.max(10, inner - 2),
+      )) {
         history.push(" " + line);
       }
       history.push("");
@@ -332,7 +359,7 @@ export class NativeTerminalTui {
       "  " +
       modeDescription(this.mode) +
       RESET;
-    const help = DIM + " Shift+Tab mode  /mode <name>  Esc exit" + RESET;
+    const help = DIM + " Shift+Tab mode  /mode  /accept  /keep  Esc exit" + RESET;
     const prompt = this.approval
       ? DIM + " approval> " + RESET
       : this.busy
