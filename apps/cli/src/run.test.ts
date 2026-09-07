@@ -2,7 +2,9 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it, expect, afterEach } from "vitest";
-import { runCli } from "./run";
+import { runCli, runPreview } from "./run";
+import { setWorkspaceRoot, resetWorkspaceRoot } from "@zjf-harness/tools";
+import type { ModelClient } from "@zjf-harness/core";
 
 describe("cli", () => {
   it("defaults to plan", () => {
@@ -53,14 +55,22 @@ describe("cli", () => {
   describe("tool execution permissions (--write / --edit)", () => {
     let tmpDir: string | undefined;
 
+    async function makeTmp(prefix: string): Promise<string> {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+      setWorkspaceRoot(tmpDir);
+      return tmpDir;
+    }
+
     afterEach(async () => {
       if (tmpDir) {
         await rm(tmpDir, { recursive: true, force: true });
+        tmpDir = undefined;
       }
+      resetWorkspaceRoot();
     });
 
     it("--write under plan fails closed and does not touch file", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      tmpDir = await makeTmp("cli-test-");
       const file = path.join(tmpDir, "target.txt");
       await writeFile(file, "before\n");
 
@@ -72,7 +82,7 @@ describe("cli", () => {
     });
 
     it("--edit under plan fails closed", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      tmpDir = await makeTmp("cli-test-");
       const file = path.join(tmpDir, "target.txt");
       await writeFile(file, "before\n");
 
@@ -84,7 +94,7 @@ describe("cli", () => {
     });
 
     it("-p with --write under plan fails closed with fail-closed in stderr", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      tmpDir = await makeTmp("cli-test-");
       const file = path.join(tmpDir, "target.txt");
       await writeFile(file, "before\n");
 
@@ -97,7 +107,7 @@ describe("cli", () => {
     });
 
     it("-p --mode plan with --write fails closed", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      tmpDir = await makeTmp("cli-test-");
       const file = path.join(tmpDir, "target.txt");
       await writeFile(file, "before\n");
 
@@ -108,7 +118,7 @@ describe("cli", () => {
     });
 
     it("--write under accept-edits writes after\\n", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      tmpDir = await makeTmp("cli-test-");
       const file = path.join(tmpDir, "target.txt");
       await writeFile(file, "before\n");
 
@@ -119,7 +129,7 @@ describe("cli", () => {
     });
 
     it("--edit under accept-edits writes after\\n", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      tmpDir = await makeTmp("cli-test-");
       const file = path.join(tmpDir, "target.txt");
       await writeFile(file, "before\n");
 
@@ -130,7 +140,7 @@ describe("cli", () => {
     });
 
     it("--write under bypass writes after\\n", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      tmpDir = await makeTmp("cli-test-");
       const file = path.join(tmpDir, "target.txt");
       await writeFile(file, "before\n");
 
@@ -141,7 +151,7 @@ describe("cli", () => {
     });
 
     it("-p --mode bypass with --write writes after\\n", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-test-"));
+      tmpDir = await makeTmp("cli-test-");
       const file = path.join(tmpDir, "target.txt");
       await writeFile(file, "before\n");
 
@@ -273,14 +283,22 @@ describe("cli", () => {
   describe("read / glob / grep tools (--read / --glob / --grep / --path)", () => {
     let tmpDir: string | undefined;
 
+    async function makeTmp(prefix: string): Promise<string> {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+      setWorkspaceRoot(tmpDir);
+      return tmpDir;
+    }
+
     afterEach(async () => {
       if (tmpDir) {
         await rm(tmpDir, { recursive: true, force: true });
+        tmpDir = undefined;
       }
+      resetWorkspaceRoot();
     });
 
     it("--read auto-runs in plan mode (default) and prints file contents", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-read-"));
+      tmpDir = await makeTmp("cli-read-");
       const file = path.join(tmpDir, "hello.txt");
       await writeFile(file, "hello from plan read\n", "utf8");
 
@@ -291,7 +309,7 @@ describe("cli", () => {
     });
 
     it("--read auto-runs in accept-edits and bypass modes", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-read-"));
+      tmpDir = await makeTmp("cli-read-");
       const file = path.join(tmpDir, "content.txt");
       await writeFile(file, "some file content\n", "utf8");
 
@@ -305,7 +323,7 @@ describe("cli", () => {
     });
 
     it("--read on missing file fails with non-zero exit code", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-read-"));
+      tmpDir = await makeTmp("cli-read-");
       const missingFile = path.join(tmpDir, "missing.txt");
 
       const r = runCli(["--read", missingFile]);
@@ -324,7 +342,7 @@ describe("cli", () => {
     });
 
     it("--glob auto-runs in plan mode and prints matching paths", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-glob-"));
+      tmpDir = await makeTmp("cli-glob-");
       await writeFile(path.join(tmpDir, "file2.txt"), "2");
       await writeFile(path.join(tmpDir, "file1.txt"), "1");
 
@@ -334,7 +352,7 @@ describe("cli", () => {
     });
 
     it("--glob auto-runs in accept-edits and bypass modes", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-glob-"));
+      tmpDir = await makeTmp("cli-glob-");
       await writeFile(path.join(tmpDir, "alpha.json"), "{}");
 
       const r1 = runCli(["--mode", "accept-edits", "--glob=*.json", `--path=${tmpDir}`]);
@@ -357,7 +375,7 @@ describe("cli", () => {
     });
 
     it("--grep auto-runs in plan mode and prints matching file:line:text", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-grep-"));
+      tmpDir = await makeTmp("cli-grep-");
       const file = path.join(tmpDir, "test.txt");
       await writeFile(file, "first line\nmatch here 1\nthird line\nmatch here 2\n");
 
@@ -369,7 +387,7 @@ describe("cli", () => {
     });
 
     it("--grep auto-runs in accept-edits and bypass modes across directory", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-grep-"));
+      tmpDir = await makeTmp("cli-grep-");
       const file1 = path.join(tmpDir, "a.txt");
       const file2 = path.join(tmpDir, "b.txt");
       await writeFile(file1, "keyword alpha\n");
@@ -390,6 +408,108 @@ describe("cli", () => {
       const r2 = runCli(["--grep", "pattern", "--path", "/nonexistent_file_grep.txt"]);
       expect(r2.exitCode).not.toBe(0);
       expect(r2.stderr).not.toBe("");
+    });
+  });
+
+  describe("security knife: workspace jail and hard denylist in cli", () => {
+    let tmpDir: string | undefined;
+
+    afterEach(async () => {
+      if (tmpDir) {
+        await rm(tmpDir, { recursive: true, force: true });
+        tmpDir = undefined;
+      }
+      resetWorkspaceRoot();
+    });
+
+    it("rejects read outside workspace in cli", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-jail-read-"));
+      setWorkspaceRoot(tmpDir);
+      const outsideFile = path.join(os.tmpdir(), "outside-secret.txt");
+
+      const r = runCli(["--read", outsideFile]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toMatch(/outside workspace/);
+    });
+
+    it("rejects write outside workspace in cli even in bypass mode", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-jail-write-"));
+      setWorkspaceRoot(tmpDir);
+      const outsideFile = path.join(os.tmpdir(), "outside-target.txt");
+
+      const r = runCli(["--mode", "bypass", "--write", outsideFile]);
+      expect(r.exitCode).not.toBe(0);
+      expect(r.stderr).toMatch(/outside workspace/);
+    });
+
+    it("--workspace flag configures workspace root allowing writes inside it", async () => {
+      tmpDir = await mkdtemp(path.join(os.tmpdir(), "cli-ws-flag-"));
+      const insideFile = path.join(tmpDir, "created-inside.txt");
+
+      const r = runCli(["--workspace", tmpDir, "--mode", "bypass", "--write", insideFile]);
+      expect(r.exitCode).toBe(0);
+      expect(await readFile(insideFile, "utf8")).toBe("after\n");
+    });
+
+    it("hard-denied bash rm -rf / fails closed even in bypass mode", () => {
+      const r = runCli(["--mode", "bypass", "--bash", "rm -rf /"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toMatch(/hard-denied/);
+    });
+
+    it("hard-denied bash mkfs fails closed in plan mode", () => {
+      const r = runCli(["--mode", "plan", "--bash", "mkfs.ext4 /dev/sda"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toMatch(/hard-denied/);
+    });
+
+    it("hard-denied bash fork bomb fails closed in accept-edits mode", () => {
+      const r = runCli(["--mode", "accept-edits", "--bash", ":(){ :|:& };:"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toMatch(/hard-denied/);
+    });
+
+    it("hard-denied write to /etc/ fails closed even in bypass mode", () => {
+      const r = runCli(["--mode", "bypass", "--write", "/etc/passwd"]);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toMatch(/hard-denied/);
+    });
+
+    it("interactive runPreview with hard-denied command fails closed without calling readKey", async () => {
+      let askedKey = false;
+      const writes: string[] = [];
+      const fakeModel: ModelClient = {
+        async complete() {
+          return {
+            text: "trying dangerous command",
+            toolCalls: [
+              {
+                id: "call-1",
+                name: "bash",
+                arguments: { command: "rm -rf /" },
+              },
+            ],
+          };
+        },
+      };
+
+      const result = await runPreview(
+        ["run dangerous task"],
+        fakeModel,
+        {
+          interactive: true,
+          write: (t) => writes.push(t),
+          readKey: async () => {
+            askedKey = true;
+            return "y";
+          },
+          readLine: async () => undefined,
+        },
+      );
+
+      expect(askedKey).toBe(false);
+      expect(result.exitCode).toBe(1);
+      expect(writes.join("")).toMatch(/hard-denied/);
     });
   });
 });

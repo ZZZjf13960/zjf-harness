@@ -1,8 +1,8 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { createSession, runLoop } from "@zjf-harness/core";
+import { describe, expect, it, afterEach } from "vitest";
+import { createSession, runLoop, resetWorkspaceRoot } from "@zjf-harness/core";
 import {
   acceptPlan,
   cycleMode,
@@ -34,12 +34,16 @@ function editThenText(file: string, oldText: string, newText: string) {
 }
 
 describe("vertical slice e2e", () => {
+  afterEach(() => {
+    resetWorkspaceRoot();
+  });
+
   it("edit approval body is a unified diff and deny does not land", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "zjf-e2e-"));
     const file = path.join(dir, "note.txt");
     await writeFile(file, "hello" + String.fromCharCode(10));
     let body = "";
-    const session = createSession({ mode: "plan" });
+    const session = createSession({ mode: "plan", workspaceRoot: dir });
     const r = await runLoop({
       session,
       prompt: "edit the note",
@@ -65,7 +69,7 @@ describe("vertical slice e2e", () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "zjf-e2e-"));
     const file = path.join(dir, "note.txt");
     await writeFile(file, "hello" + String.fromCharCode(10));
-    const session = createSession({ mode: "plan" });
+    const session = createSession({ mode: "plan", workspaceRoot: dir });
     const r = await runLoop({
       session,
       prompt: "edit the note",
@@ -82,7 +86,7 @@ describe("vertical slice e2e", () => {
     const file = path.join(dir, "note.txt");
     await writeFile(file, "hello" + String.fromCharCode(10));
     const controller = new AbortController();
-    const session = createSession({ mode: "plan" });
+    const session = createSession({ mode: "plan", workspaceRoot: dir });
     let n = 0;
     const model = {
       complete: async () => {

@@ -3,6 +3,7 @@ import {
   PERMISSION_MODES,
   parsePermissionMode,
   canAutoRun,
+  isHardDenied,
   type PermissionMode,
   type ToolName,
 } from "@zjf-harness/permissions";
@@ -13,6 +14,7 @@ import {
   readSync,
   globSync,
   grepSync,
+  setWorkspaceRoot,
 } from "@zjf-harness/tools";
 import {
   createOpenAIClient,
@@ -42,16 +44,17 @@ function usage(): string {
     "Usage: zjf-harness [options]",
     "",
     "Options:",
-    "  --mode <mode>   Permission mode: plan | accept-edits | bypass (default: plan)",
-    "  -p, --print     Non-interactive print mode (does not change permission mode)",
-    "  --read <path>   Request read of file at path",
-    "  --write <path>  Request write of 'after\\n' to path",
-    "  --edit <path>   Request edit of 'after\\n' to path",
-    "  --bash <cmd>    Request bash execution of command",
-    "  --glob <pat>    Request glob matching of pattern",
-    "  --grep <pat>    Request grep search of pattern",
-    "  --path <path>   Optional path for grep/glob (default: cwd)",
-    "  -h, --help      Show this help",
+    "  --mode <mode>        Permission mode: plan | accept-edits | bypass (default: plan)",
+    "  -p, --print          Non-interactive print mode (does not change permission mode)",
+    "  --workspace <path>   Workspace directory (default: cwd)",
+    "  --read <path>        Request read of file at path",
+    "  --write <path>       Request write of 'after\\n' to path",
+    "  --edit <path>        Request edit of 'after\\n' to path",
+    "  --bash <cmd>         Request bash execution of command",
+    "  --glob <pat>         Request glob matching of pattern",
+    "  --grep <pat>         Request grep search of pattern",
+    "  --path <path>        Optional path for grep/glob (default: cwd)",
+    "  -h, --help           Show this help",
   ].join("\n") + "\n";
 }
 
@@ -66,6 +69,7 @@ export function runCli(argv: string[]): CliResult {
   let globPattern: string | undefined;
   let grepPattern: string | undefined;
   let customPath: string | undefined;
+  let workspacePath: string | undefined;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -97,6 +101,41 @@ export function runCli(argv: string[]): CliResult {
     if (arg.startsWith("--mode=")) {
       modeProvided = true;
       modeRaw = arg.slice("--mode=".length);
+      continue;
+    }
+    if (arg === "--workspace" || arg === "--dir") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: `Missing value for ${arg}\n`,
+        };
+      }
+      workspacePath = next;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--workspace=")) {
+      workspacePath = arg.slice("--workspace=".length);
+      if (!workspacePath) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --workspace\n",
+        };
+      }
+      continue;
+    }
+    if (arg.startsWith("--dir=")) {
+      workspacePath = arg.slice("--dir=".length);
+      if (!workspacePath) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: "Missing value for --dir\n",
+        };
+      }
       continue;
     }
     if (arg === "--read") {
@@ -281,6 +320,10 @@ export function runCli(argv: string[]): CliResult {
     }
   }
 
+  if (workspacePath) {
+    setWorkspaceRoot(workspacePath);
+  }
+
   if (help) {
     return { exitCode: 0, stdout: usage(), stderr: "" };
   }
@@ -298,7 +341,15 @@ export function runCli(argv: string[]): CliResult {
   }
 
   if (requestedTool) {
-    const allowed = canAutoRun(requestedTool, mode);
+    const toolArgs = requestedTool === "bash" ? bashCommand : targetPath;
+    if (isHardDenied(requestedTool, toolArgs)) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: `Tool '${requestedTool}' is hard-denied (dangerous operation blocked).\n`,
+      };
+    }
+    const allowed = canAutoRun(requestedTool, mode, { args: toolArgs });
     if (!allowed) {
       let stderrMsg = `Tool '${requestedTool}' requires approval in mode '${mode}'.`;
       if (print) {
@@ -440,7 +491,18 @@ function withoutPrompt(argv: string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--mode" || arg === "--write" || arg === "--edit" || arg === "--bash" || arg === "--read" || arg === "--glob" || arg === "--grep" || arg === "--path") {
+    if (
+      arg === "--mode" ||
+      arg === "--write" ||
+      arg === "--edit" ||
+      arg === "--bash" ||
+      arg === "--read" ||
+      arg === "--glob" ||
+      arg === "--grep" ||
+      arg === "--path" ||
+      arg === "--workspace" ||
+      arg === "--dir"
+    ) {
       out.push(arg);
       const next = argv[i + 1];
       if (next !== undefined) {
@@ -460,7 +522,18 @@ export function previewPrompt(argv: string[]): string | undefined {
   const parts: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
-    if (arg === "--mode" || arg === "--write" || arg === "--edit" || arg === "--bash" || arg === "--read" || arg === "--glob" || arg === "--grep" || arg === "--path") {
+    if (
+      arg === "--mode" ||
+      arg === "--write" ||
+      arg === "--edit" ||
+      arg === "--bash" ||
+      arg === "--read" ||
+      arg === "--glob" ||
+      arg === "--grep" ||
+      arg === "--path" ||
+      arg === "--workspace" ||
+      arg === "--dir"
+    ) {
       i += 1;
       continue;
     }
@@ -472,7 +545,9 @@ export function previewPrompt(argv: string[]): string | undefined {
       arg.startsWith("--read=") ||
       arg.startsWith("--glob=") ||
       arg.startsWith("--grep=") ||
-      arg.startsWith("--path=")
+      arg.startsWith("--path=") ||
+      arg.startsWith("--workspace=") ||
+      arg.startsWith("--dir=")
     ) {
       continue;
     }
@@ -537,6 +612,19 @@ function resultText(value: string): string {
   return value.replace(/^mode=\S+\s+print=(?:true|false)\n/, "").trim();
 }
 
+function extractWorkspaceArg(argv: string[]): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--workspace" || arg === "--dir") {
+      const next = argv[i + 1];
+      if (next && !next.startsWith("-")) return next;
+    }
+    if (arg.startsWith("--workspace=")) return arg.slice("--workspace=".length);
+    if (arg.startsWith("--dir=")) return arg.slice("--dir=".length);
+  }
+  return undefined;
+}
+
 export async function runTui(
   argv: string[],
   model?: ModelClient,
@@ -548,7 +636,8 @@ export async function runTui(
   const mode = parsePermissionMode(
     parsed.stdout.match(/mode=(\S+)/)?.[1] ?? DEFAULT_PERMISSION_MODE,
   );
-  const session = createSession({ mode });
+  const workspaceRoot = extractWorkspaceArg(argv);
+  const session = createSession({ mode, workspaceRoot });
   const client = model ?? createOpenAIClient();
   let prompt = previewPrompt(argv);
   let lastExitCode = 0;
@@ -697,7 +786,8 @@ export async function runPreview(
         }
       : undefined);
   const client = model ?? createOpenAIClient();
-  const session = createSession({ mode });
+  const workspaceRoot = extractWorkspaceArg(argv);
+  const session = createSession({ mode, workspaceRoot });
   if (interactive) {
     write(liveBanner(session.mode));
   }

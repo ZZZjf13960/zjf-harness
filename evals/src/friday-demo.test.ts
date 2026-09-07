@@ -1,9 +1,10 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
 import { runCli } from "@zjf-harness/cli";
 import { canAutoRun } from "@zjf-harness/permissions";
+import { setWorkspaceRoot, resetWorkspaceRoot } from "@zjf-harness/core";
 
 const modeFlag = "-" + "-" + "mode";
 const printFlag = "-p";
@@ -13,12 +14,16 @@ const bashFlag = "-" + "-bash";
 
 async function withTarget() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "zjf-evals-"));
+  setWorkspaceRoot(dir);
   const file = path.join(dir, "target.txt");
   await writeFile(file, "before\\n");
   return file;
 }
 
 describe("Friday demo section 8", () => {
+  afterEach(() => {
+    resetWorkspaceRoot();
+  });
   it("1. no mode flag starts in plan", () => {
     const r = runCli([]);
     expect(r.exitCode).toBe(0);

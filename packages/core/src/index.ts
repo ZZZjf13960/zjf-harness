@@ -1,13 +1,24 @@
 import {
   canAutoRun,
   DEFAULT_PERMISSION_MODE,
+  isHardDenied,
   parsePermissionMode,
   type PermissionMode,
   type ToolName,
 } from "@zjf-harness/permissions";
-import { get, list, previewEdit, previewWrite } from "@zjf-harness/tools";
+import {
+  get,
+  getWorkspaceRoot,
+  isWorkspaceRootSet,
+  list,
+  previewEdit,
+  previewWrite,
+  resetWorkspaceRoot,
+  setWorkspaceRoot,
+} from "@zjf-harness/tools";
 
 export type { PermissionMode };
+export { getWorkspaceRoot, setWorkspaceRoot, resetWorkspaceRoot };
 
 export type ToolCallRequest = {
   id: string;
@@ -44,14 +55,23 @@ export type Session = {
   mode: PermissionMode;
   sessionAllowed: Set<string>;
   messages: ChatMessage[];
+  workspaceRoot?: string;
 };
 
-export function createSession(input?: { mode?: string }): Session {
+export function createSession(input?: {
+  mode?: string;
+  workspaceRoot?: string;
+}): Session {
   const mode =
     input?.mode === undefined
       ? DEFAULT_PERMISSION_MODE
       : parsePermissionMode(input.mode);
-  return { mode, sessionAllowed: new Set(), messages: [] };
+  return {
+    mode,
+    sessionAllowed: new Set(),
+    messages: [],
+    workspaceRoot: input?.workspaceRoot,
+  };
 }
 
 export type LoopResult = {
@@ -88,6 +108,7 @@ export async function runLoop(input: {
   print?: boolean;
   maxTurns?: number;
   signal?: AbortSignal;
+  workspaceRoot?: string;
   onApprove?: (gate: {
     tool: string;
     mode: PermissionMode;
@@ -98,6 +119,14 @@ export async function runLoop(input: {
   const print = input.print === true;
   const header = "mode=" + session.mode + " print=" + String(print) + "\n";
   session.messages.push({ role: "user", content: input.prompt });
+
+  if (input.workspaceRoot) {
+    setWorkspaceRoot(input.workspaceRoot);
+  } else if (session.workspaceRoot) {
+    setWorkspaceRoot(session.workspaceRoot);
+  } else if (!isWorkspaceRootSet()) {
+    setWorkspaceRoot(process.cwd());
+  }
 
   const maxTurns = input.maxTurns ?? MAX_TURNS;
   for (let turn = 0; turn < maxTurns; turn++) {
@@ -136,10 +165,22 @@ export async function runLoop(input: {
 
     for (const call of reply.toolCalls) {
       const toolName = asToolName(call.name);
+
+      if (isHardDenied(call.name, call.arguments)) {
+        return {
+          exitCode: 1,
+          stdout: "",
+          stderr: `Tool '${call.name}' is hard-denied (dangerous operation blocked).\n`,
+          session,
+          gatedTool: call.name,
+        };
+      }
+
       const allowed =
         toolName !== undefined &&
         canAutoRun(toolName, session.mode, {
           sessionAllowed: session.sessionAllowed,
+          args: call.arguments,
         });
       if (!allowed) {
         const approve = input.onApprove;

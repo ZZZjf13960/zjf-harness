@@ -79,7 +79,16 @@ export type BashToolArgs =
       command?: string;
       cmd?: string;
       cwd?: string;
+      timeoutMs?: number;
+      timeout?: number;
+      maxBuffer?: number;
+      maxBytes?: number;
     };
+
+export type BashOptions = {
+  timeoutMs?: number;
+  maxBuffer?: number;
+};
 
 export type BashResult = {
   success: boolean;
@@ -87,6 +96,118 @@ export type BashResult = {
   stdout: string;
   stderr: string;
 };
+
+/** Default bash command execution timeout in milliseconds (30 seconds). */
+export const DEFAULT_BASH_TIMEOUT_MS = 30_000;
+
+/** Default bash max buffer size (stdout + stderr) in bytes (1,000,000 bytes = 1MB). */
+export const DEFAULT_BASH_MAX_BUFFER_BYTES = 1_000_000;
+
+let customWorkspaceRoot: string | undefined;
+
+export function setWorkspaceRoot(root: string): void {
+  const abs = path.resolve(root);
+  try {
+    customWorkspaceRoot = fs.realpathSync(abs);
+  } catch {
+    customWorkspaceRoot = abs;
+  }
+}
+
+export function getWorkspaceRoot(): string {
+  if (customWorkspaceRoot !== undefined) {
+    return customWorkspaceRoot;
+  }
+  try {
+    return fs.realpathSync(process.cwd());
+  } catch {
+    return path.resolve(process.cwd());
+  }
+}
+
+export function isWorkspaceRootSet(): boolean {
+  return customWorkspaceRoot !== undefined;
+}
+
+export function resetWorkspaceRoot(): void {
+  customWorkspaceRoot = undefined;
+}
+
+function isInside(target: string, root: string): boolean {
+  const rel = path.relative(root, target);
+  return !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+export function assertInsideWorkspace(targetPath: string, _forWrite = false): string {
+  const root = getWorkspaceRoot();
+  const resolved = path.resolve(root, targetPath);
+
+  // 1. Lexical check against workspace root
+  if (!isInside(resolved, root)) {
+    throw new Error(`Path is outside workspace: ${targetPath}`);
+  }
+
+  // 2. Realpath check for existing paths (including symlinks)
+  let statExists = false;
+  try {
+    fs.lstatSync(resolved);
+    statExists = true;
+  } catch {
+    statExists = false;
+  }
+
+  if (statExists) {
+    let realPath: string;
+    try {
+      realPath = fs.realpathSync(resolved);
+    } catch {
+      try {
+        const linkTarget = fs.readlinkSync(resolved);
+        realPath = path.resolve(path.dirname(resolved), linkTarget);
+      } catch {
+        realPath = resolved;
+      }
+    }
+    if (!isInside(realPath, root)) {
+      throw new Error(`Path is outside workspace: ${targetPath}`);
+    }
+    return resolved;
+  }
+
+  // 3. For not-yet-existing paths: resolve nearest existing parent and ensure join stays under root
+  let curr = path.dirname(resolved);
+  const remainingParts: string[] = [path.basename(resolved)];
+
+  while (curr !== root && isInside(curr, root)) {
+    try {
+      fs.lstatSync(curr);
+      break;
+    } catch {
+      remainingParts.unshift(path.basename(curr));
+      const parent = path.dirname(curr);
+      if (parent === curr) break;
+      curr = parent;
+    }
+  }
+
+  let realParent: string;
+  try {
+    realParent = fs.realpathSync(curr);
+  } catch {
+    realParent = curr;
+  }
+
+  if (!isInside(realParent, root)) {
+    throw new Error(`Path is outside workspace: ${targetPath}`);
+  }
+
+  const simulated = path.resolve(realParent, ...remainingParts);
+  if (!isInside(simulated, root)) {
+    throw new Error(`Path is outside workspace: ${targetPath}`);
+  }
+
+  return resolved;
+}
 
 function extractPathAndContent(args: unknown): { targetPath: string; content: string } {
   if (typeof args === "string") {
@@ -122,7 +243,12 @@ function extractReadPath(args: unknown): string {
   throw new Error("Invalid arguments for read tool");
 }
 
-function extractCommand(args: unknown): { command: string; cwd?: string } {
+function extractCommand(args: unknown): {
+  command: string;
+  cwd?: string;
+  timeoutMs?: number;
+  maxBuffer?: number;
+} {
   if (typeof args === "string") {
     if (!args) {
       throw new Error("Missing command for bash tool");
@@ -136,7 +262,19 @@ function extractCommand(args: unknown): { command: string; cwd?: string } {
       throw new Error("Missing command for bash tool");
     }
     const cwd = typeof obj.cwd === "string" ? obj.cwd : undefined;
-    return { command, cwd };
+    const timeoutMs =
+      typeof obj.timeoutMs === "number"
+        ? obj.timeoutMs
+        : typeof obj.timeout === "number"
+          ? obj.timeout
+          : undefined;
+    const maxBuffer =
+      typeof obj.maxBuffer === "number"
+        ? obj.maxBuffer
+        : typeof obj.maxBytes === "number"
+          ? obj.maxBytes
+          : undefined;
+    return { command, cwd, timeoutMs, maxBuffer };
   }
   throw new Error("Invalid arguments for bash tool");
 }
@@ -193,17 +331,19 @@ function extractGrepArgs(args: unknown): {
 
 export function readSync(args: unknown): string {
   const targetPath = extractReadPath(args);
-  return fs.readFileSync(targetPath, "utf8");
+  const resolved = assertInsideWorkspace(targetPath);
+  return fs.readFileSync(resolved, "utf8");
 }
 
 export async function readHandler(args: unknown): Promise<string> {
   const targetPath = extractReadPath(args);
-  return await readFile(targetPath, "utf8");
+  const resolved = assertInsideWorkspace(targetPath);
+  return await readFile(resolved, "utf8");
 }
 
 export function globSync(args: unknown): string[] {
   const { pattern, cwd } = extractGlobArgs(args);
-  const effectiveCwd = cwd ? path.resolve(cwd) : process.cwd();
+  const effectiveCwd = cwd ? assertInsideWorkspace(cwd) : getWorkspaceRoot();
   if (!fs.existsSync(effectiveCwd)) {
     throw new Error(`Directory not found: ${effectiveCwd}`);
   }
@@ -238,7 +378,7 @@ function fallbackGlob(pattern: string, cwd: string): string[] {
 
 export function grepSync(args: unknown): string[] {
   const { pattern, path: searchPath, glob: globPattern, cwd: customCwd } = extractGrepArgs(args);
-  const cwd = customCwd ? path.resolve(customCwd) : process.cwd();
+  const cwd = customCwd ? assertInsideWorkspace(customCwd) : getWorkspaceRoot();
 
   let matchFn: (line: string) => boolean;
   if (pattern instanceof RegExp) {
@@ -257,6 +397,11 @@ export function grepSync(args: unknown): string[] {
   const results: string[] = [];
 
   function searchFile(fullPath: string, displayPath: string) {
+    try {
+      assertInsideWorkspace(fullPath);
+    } catch {
+      return;
+    }
     let content: string;
     try {
       content = fs.readFileSync(fullPath, "utf8");
@@ -276,6 +421,7 @@ export function grepSync(args: unknown): string[] {
 
   if (globPattern) {
     const baseDir = searchPath ? path.resolve(cwd, searchPath) : cwd;
+    assertInsideWorkspace(baseDir);
     if (!fs.existsSync(baseDir)) {
       throw new Error(`Directory not found: ${searchPath}`);
     }
@@ -289,6 +435,7 @@ export function grepSync(args: unknown): string[] {
     }
   } else if (searchPath) {
     const target = path.resolve(cwd, searchPath);
+    assertInsideWorkspace(target);
     if (!fs.existsSync(target)) {
       throw new Error(`Path not found: ${searchPath}`);
     }
@@ -306,6 +453,7 @@ export function grepSync(args: unknown): string[] {
       }
     }
   } else {
+    assertInsideWorkspace(cwd);
     const matches = Array.from(fs.globSync("**/*", { cwd })).map(String).sort();
     for (const rel of matches) {
       const full = path.resolve(cwd, rel);
@@ -322,16 +470,55 @@ export async function grepHandler(args: unknown): Promise<string[]> {
   return grepSync(args);
 }
 
-export function bashSync(args: unknown): BashResult {
-  const { command, cwd } = extractCommand(args);
+export function bashSync(args: unknown, options?: BashOptions): BashResult {
+  const parsed = extractCommand(args);
+  const command = parsed.command;
+  const cwd = parsed.cwd;
+  const effectiveCwd = cwd ? assertInsideWorkspace(cwd) : getWorkspaceRoot();
+
+  const timeoutMs = options?.timeoutMs ?? parsed.timeoutMs ?? DEFAULT_BASH_TIMEOUT_MS;
+  const maxBuffer = options?.maxBuffer ?? parsed.maxBuffer ?? DEFAULT_BASH_MAX_BUFFER_BYTES;
+
   const res = spawnSync(command, {
     shell: "/bin/bash",
     encoding: "utf8",
-    cwd,
+    cwd: effectiveCwd,
+    timeout: timeoutMs,
+    maxBuffer: maxBuffer,
+    killSignal: "SIGKILL",
   });
-  const exitCode = res.status ?? (res.error ? 1 : 0);
+
+  if (res.error) {
+    const errCode = (res.error as NodeJS.ErrnoException).code;
+    if (errCode === "ETIMEDOUT") {
+      return {
+        success: false,
+        exitCode: 124,
+        stdout: res.stdout ?? "",
+        stderr:
+          (res.stderr ? res.stderr + "\n" : "") +
+          `Command timed out after ${timeoutMs}ms`,
+      };
+    }
+    if (errCode === "ENOBUFS" || (res.error as any).name === "RangeError") {
+      throw new Error(
+        `Command output exceeded limit of ${maxBuffer} bytes (output overflow)`,
+      );
+    }
+  }
+
   const stdout = res.stdout ?? "";
   const stderr = res.stderr ?? (res.error ? res.error.message : "");
+  if (
+    Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(stderr, "utf8") >
+    maxBuffer
+  ) {
+    throw new Error(
+      `Command output exceeded limit of ${maxBuffer} bytes (output overflow)`,
+    );
+  }
+
+  const exitCode = res.status ?? (res.error ? 1 : 0);
   return {
     success: exitCode === 0,
     exitCode,
@@ -340,28 +527,30 @@ export function bashSync(args: unknown): BashResult {
   };
 }
 
-export async function bashHandler(args: unknown): Promise<BashResult> {
-  return bashSync(args);
+export async function bashHandler(args: unknown, options?: BashOptions): Promise<BashResult> {
+  return bashSync(args, options);
 }
 
 export function writeSync(args: unknown): { success: boolean; path: string } {
   const { targetPath, content } = extractPathAndContent(args);
-  const dir = path.dirname(targetPath);
+  const resolved = assertInsideWorkspace(targetPath, true);
+  const dir = path.dirname(resolved);
   if (dir && !fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(targetPath, content, "utf8");
-  return { success: true, path: targetPath };
+  fs.writeFileSync(resolved, content, "utf8");
+  return { success: true, path: resolved };
 }
 
 export async function writeHandler(args: unknown): Promise<{ success: boolean; path: string }> {
   const { targetPath, content } = extractPathAndContent(args);
-  const dir = path.dirname(targetPath);
+  const resolved = assertInsideWorkspace(targetPath, true);
+  const dir = path.dirname(resolved);
   if (dir) {
     await mkdir(dir, { recursive: true });
   }
-  await writeFile(targetPath, content, "utf8");
-  return { success: true, path: targetPath };
+  await writeFile(resolved, content, "utf8");
+  return { success: true, path: resolved };
 }
 
 function extractEditArgs(args: unknown): {
@@ -558,58 +747,62 @@ export function formatUnifiedDiff(
 
 export function previewEdit(args: unknown): string {
   const { targetPath, oldText, newText } = extractEditArgs(args);
-  const before = fs.readFileSync(targetPath, "utf8");
+  const resolved = assertInsideWorkspace(targetPath, true);
+  const before = fs.readFileSync(resolved, "utf8");
   const index = before.indexOf(oldText);
   if (index === -1) {
     throw new Error(`oldText not found in file: ${targetPath}`);
   }
   const after = before.slice(0, index) + newText + before.slice(index + oldText.length);
-  return formatUnifiedDiff(targetPath, before, after);
+  return formatUnifiedDiff(resolved, before, after);
 }
 
 export function previewWrite(args: unknown): string {
   const { targetPath, content } = extractPathAndContent(args);
+  const resolved = assertInsideWorkspace(targetPath, true);
   let before = "";
   try {
-    before = fs.readFileSync(targetPath, "utf8");
+    before = fs.readFileSync(resolved, "utf8");
   } catch {
     before = "";
   }
-  return formatUnifiedDiff(targetPath, before, content);
+  return formatUnifiedDiff(resolved, before, content);
 }
 
 export function editSync(args: unknown): EditResult {
   const { targetPath, oldText, newText } = extractEditArgs(args);
-  const before = fs.readFileSync(targetPath, "utf8");
+  const resolved = assertInsideWorkspace(targetPath, true);
+  const before = fs.readFileSync(resolved, "utf8");
   const index = before.indexOf(oldText);
   if (index === -1) {
     throw new Error(`oldText not found in file: ${targetPath}`);
   }
   const after = before.slice(0, index) + newText + before.slice(index + oldText.length);
-  const diff = formatUnifiedDiff(targetPath, before, after);
-  const dir = path.dirname(targetPath);
+  const diff = formatUnifiedDiff(resolved, before, after);
+  const dir = path.dirname(resolved);
   if (dir && !fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(targetPath, after, "utf8");
-  return { success: true, path: targetPath, diff };
+  fs.writeFileSync(resolved, after, "utf8");
+  return { success: true, path: resolved, diff };
 }
 
 export async function editHandler(args: unknown): Promise<EditResult> {
   const { targetPath, oldText, newText } = extractEditArgs(args);
-  const before = await readFile(targetPath, "utf8");
+  const resolved = assertInsideWorkspace(targetPath, true);
+  const before = await readFile(resolved, "utf8");
   const index = before.indexOf(oldText);
   if (index === -1) {
     throw new Error(`oldText not found in file: ${targetPath}`);
   }
   const after = before.slice(0, index) + newText + before.slice(index + oldText.length);
-  const diff = formatUnifiedDiff(targetPath, before, after);
-  const dir = path.dirname(targetPath);
+  const diff = formatUnifiedDiff(resolved, before, after);
+  const dir = path.dirname(resolved);
   if (dir) {
     await mkdir(dir, { recursive: true });
   }
-  await writeFile(targetPath, after, "utf8");
-  return { success: true, path: targetPath, diff };
+  await writeFile(resolved, after, "utf8");
+  return { success: true, path: resolved, diff };
 }
 
 

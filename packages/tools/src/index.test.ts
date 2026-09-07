@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import {
   get,
   list,
   writeSync,
+  writeHandler,
   editSync,
   editHandler,
   formatUnifiedDiff,
@@ -19,15 +21,26 @@ import {
   globHandler,
   grepSync,
   grepHandler,
+  getWorkspaceRoot,
+  setWorkspaceRoot,
+  resetWorkspaceRoot,
 } from "./index";
 
 describe("tools", () => {
   let tmpDir: string | undefined;
 
+  async function makeTmp(prefix: string): Promise<string> {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+    setWorkspaceRoot(tmpDir);
+    return tmpDir;
+  }
+
   afterEach(async () => {
     if (tmpDir) {
       await rm(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
     }
+    resetWorkspaceRoot();
   });
 
   it("lists all 6 tools", () => {
@@ -146,7 +159,7 @@ describe("tools", () => {
 
   describe("read tool", () => {
     it("readSync reads utf8 file content", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-read-"));
+      tmpDir = await makeTmp("tools-read-");
       const file = path.join(tmpDir, "sample.txt");
       await writeFile(file, "hello read tool\nline 2", "utf8");
 
@@ -157,7 +170,7 @@ describe("tools", () => {
     });
 
     it("readHandler reads file content asynchronously", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-read-"));
+      tmpDir = await makeTmp("tools-read-");
       const file = path.join(tmpDir, "async.txt");
       await writeFile(file, "async content\n", "utf8");
 
@@ -171,7 +184,7 @@ describe("tools", () => {
     });
 
     it("read throws error on missing file", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-read-"));
+      tmpDir = await makeTmp("tools-read-");
       const missingFile = path.join(tmpDir, "nonexistent.txt");
 
       expect(() => readSync(missingFile)).toThrow();
@@ -187,7 +200,7 @@ describe("tools", () => {
 
   describe("glob tool", () => {
     it("globSync matches files and returns sorted relative paths", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-glob-"));
+      tmpDir = await makeTmp("tools-glob-");
       await mkdir(path.join(tmpDir, "sub"), { recursive: true });
       await writeFile(path.join(tmpDir, "b.txt"), "b");
       await writeFile(path.join(tmpDir, "a.txt"), "a");
@@ -202,7 +215,7 @@ describe("tools", () => {
     });
 
     it("globHandler works asynchronously and via registry", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-glob-"));
+      tmpDir = await makeTmp("tools-glob-");
       await writeFile(path.join(tmpDir, "test.json"), "{}");
 
       const res = await globHandler({ pattern: "*.json", cwd: tmpDir });
@@ -215,7 +228,7 @@ describe("tools", () => {
     });
 
     it("globSync returns empty array when no match", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-glob-"));
+      tmpDir = await makeTmp("tools-glob-");
       const res = globSync({ pattern: "*.xyz", cwd: tmpDir });
       expect(res).toEqual([]);
     });
@@ -223,13 +236,13 @@ describe("tools", () => {
     it("globSync throws on missing pattern or invalid directory", () => {
       expect(() => globSync("")).toThrow(/Missing pattern/);
       expect(() => globSync({})).toThrow(/Missing pattern/);
-      expect(() => globSync({ pattern: "*.txt", cwd: "/nonexistent_dir_glob_123" })).toThrow(/Directory not found/);
+      expect(() => globSync({ pattern: "*.txt", cwd: "/nonexistent_dir_glob_123" })).toThrow();
     });
   });
 
   describe("grep tool", () => {
     it("grepSync searches file contents for a string", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-grep-"));
+      tmpDir = await makeTmp("tools-grep-");
       const file = path.join(tmpDir, "sample.txt");
       await writeFile(file, "apple pie\nbanana bread\npineapple tart\ncherry", "utf8");
 
@@ -241,7 +254,7 @@ describe("tools", () => {
     });
 
     it("grepSync searches with regex pattern", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-grep-"));
+      tmpDir = await makeTmp("tools-grep-");
       const file = path.join(tmpDir, "sample.txt");
       await writeFile(file, "item 1\nskip line\nitem 42\nitem 999", "utf8");
 
@@ -259,7 +272,7 @@ describe("tools", () => {
     });
 
     it("grepSync searches directories and glob patterns", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-grep-"));
+      tmpDir = await makeTmp("tools-grep-");
       await mkdir(path.join(tmpDir, "sub"), { recursive: true });
       await writeFile(path.join(tmpDir, "a.txt"), "hello world\nfoo bar\n");
       await writeFile(path.join(tmpDir, "sub", "b.txt"), "goodbye\nhello again\n");
@@ -278,7 +291,7 @@ describe("tools", () => {
     });
 
     it("grepHandler works asynchronously and via registry", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-grep-"));
+      tmpDir = await makeTmp("tools-grep-");
       const file = path.join(tmpDir, "test.txt");
       await writeFile(file, "line one\nfind me\nline three", "utf8");
 
@@ -292,7 +305,7 @@ describe("tools", () => {
     });
 
     it("grep throws on missing file or pattern", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-grep-"));
+      tmpDir = await makeTmp("tools-grep-");
       const missingFile = path.join(tmpDir, "missing.txt");
 
       expect(() => grepSync({ pattern: "foo", path: missingFile })).toThrow();
@@ -328,7 +341,7 @@ describe("tools", () => {
   });
 
   it("bashSync and bashHandler can write to a file", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+    tmpDir = await makeTmp("tools-test-");
     const file = path.join(tmpDir, "bash_out.txt");
     const res = await bashHandler(`echo -n "from bash" > "${file}"`);
     expect(res.success).toBe(true);
@@ -342,7 +355,7 @@ describe("tools", () => {
   });
 
   it("write tool writes content asynchronously", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+    tmpDir = await makeTmp("tools-test-");
     const file = path.join(tmpDir, "out.txt");
     const writeTool = get("write");
     expect(writeTool).toBeDefined();
@@ -351,7 +364,7 @@ describe("tools", () => {
   });
 
   it("write tool defaults content to after\\n", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+    tmpDir = await makeTmp("tools-test-");
     const file = path.join(tmpDir, "out.txt");
     const writeTool = get("write");
     await writeTool!.run(file);
@@ -360,7 +373,7 @@ describe("tools", () => {
 
   describe("edit tool", () => {
     it("edit replaces only oldText once synchronously and asynchronously", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      tmpDir = await makeTmp("tools-test-");
       const file = path.join(tmpDir, "sample.txt");
       await writeFile(file, "line 1\nold text here\nline 3\nold text here\n", "utf8");
 
@@ -397,7 +410,7 @@ describe("tools", () => {
     });
 
     it("missing oldText fails with clear error", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      tmpDir = await makeTmp("tools-test-");
       const file = path.join(tmpDir, "sample.txt");
       await writeFile(file, "existing content\n", "utf8");
 
@@ -408,7 +421,7 @@ describe("tools", () => {
     });
 
     it("oldText not found in file fails with clear error without overwriting file", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      tmpDir = await makeTmp("tools-test-");
       const file = path.join(tmpDir, "sample.txt");
       await writeFile(file, "original content\n", "utf8");
 
@@ -432,7 +445,7 @@ describe("tools", () => {
     });
 
     it("returns unified diff containing -/+ lines", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      tmpDir = await makeTmp("tools-test-");
       const file = path.join(tmpDir, "diff_target.txt");
       await writeFile(file, "alpha\nbeta\ngamma\n", "utf8");
 
@@ -451,7 +464,7 @@ describe("tools", () => {
     });
 
     it("accepts filePath and file as path aliases", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      tmpDir = await makeTmp("tools-test-");
       const file1 = path.join(tmpDir, "alias1.txt");
       const file2 = path.join(tmpDir, "alias2.txt");
       await writeFile(file1, "foo\n", "utf8");
@@ -467,7 +480,7 @@ describe("tools", () => {
 
   describe("preview without apply", () => {
     it("previewEdit does not mutate file", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      tmpDir = await makeTmp("tools-test-");
       const file = path.join(tmpDir, "preview.txt");
       await writeFile(file, "original unmutated\n", "utf8");
 
@@ -487,7 +500,7 @@ describe("tools", () => {
     });
 
     it("previewWrite diffs existing file contents or empty if missing without mutating", async () => {
-      tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+      tmpDir = await makeTmp("tools-test-");
       const missingFile = path.join(tmpDir, "missing.txt");
       const diffNew = previewWrite({ path: missingFile, content: "hello new\n" });
       expect(diffNew).toContain("--- a/");
@@ -522,9 +535,122 @@ describe("tools", () => {
   });
 
   it("writeSync works synchronously", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "tools-test-"));
+    tmpDir = await makeTmp("tools-test-");
     const file1 = path.join(tmpDir, "sync1.txt");
     writeSync(file1);
     expect(await readFile(file1, "utf8")).toBe("after\n");
+  });
+
+  describe("security knife: workspace root & path jail", () => {
+    it("workspace root defaults to realpath of process.cwd() and can be set", () => {
+      resetWorkspaceRoot();
+      expect(getWorkspaceRoot()).toBe(fs.realpathSync(process.cwd()));
+      setWorkspaceRoot("/tmp");
+      expect(getWorkspaceRoot()).toBe(fs.realpathSync("/tmp"));
+      resetWorkspaceRoot();
+    });
+
+    it("rejects path outside workspace for read tool", async () => {
+      tmpDir = await makeTmp("tools-jail-");
+      const outsideFile = path.resolve(tmpDir, "../outside-read.txt");
+
+      expect(() => readSync(outsideFile)).toThrow(/outside workspace/i);
+      expect(() => readSync("/etc/passwd")).toThrow(/outside workspace/i);
+      await expect(readHandler(outsideFile)).rejects.toThrow(/outside workspace/i);
+      await expect(readHandler("/etc/passwd")).rejects.toThrow(/outside workspace/i);
+    });
+
+    it("rejects path outside workspace for write tool", async () => {
+      tmpDir = await makeTmp("tools-jail-");
+      const outsideFile = path.resolve(tmpDir, "../outside-write.txt");
+
+      expect(() => writeSync(outsideFile)).toThrow(/outside workspace/i);
+      expect(() => writeSync("/etc/test.txt")).toThrow(/outside workspace/i);
+      await expect(writeHandler(outsideFile)).rejects.toThrow(/outside workspace/i);
+      await expect(writeHandler("/etc/test.txt")).rejects.toThrow(/outside workspace/i);
+    });
+
+    it("rejects path outside workspace for edit tool and preview", async () => {
+      tmpDir = await makeTmp("tools-jail-");
+      const outsideFile = path.resolve(tmpDir, "../outside-edit.txt");
+
+      expect(() => editSync({ path: outsideFile, oldText: "a", newText: "b" })).toThrow(
+        /outside workspace/i,
+      );
+      await expect(
+        editHandler({ path: outsideFile, oldText: "a", newText: "b" }),
+      ).rejects.toThrow(/outside workspace/i);
+
+      expect(() =>
+        previewEdit({ path: outsideFile, oldText: "a", newText: "b" }),
+      ).toThrow(/outside workspace/i);
+      expect(() => previewWrite({ path: outsideFile, content: "abc" })).toThrow(
+        /outside workspace/i,
+      );
+    });
+
+    it("rejects symlink escape", async () => {
+      tmpDir = await makeTmp("tools-jail-symlink-");
+      const outsideDir = await mkdtemp(path.join(os.tmpdir(), "outside-dir-"));
+      try {
+        const outsideFile = path.join(outsideDir, "secret.txt");
+        await writeFile(outsideFile, "top secret\n", "utf8");
+
+        const linkPath = path.join(tmpDir, "escape_link");
+        fs.symlinkSync(outsideDir, linkPath, "dir");
+
+        const escapedTarget = path.join(linkPath, "secret.txt");
+        expect(() => readSync(escapedTarget)).toThrow(/outside workspace/i);
+        await expect(readHandler(escapedTarget)).rejects.toThrow(/outside workspace/i);
+
+        const escapedWriteTarget = path.join(linkPath, "new_pwn.txt");
+        expect(() => writeSync({ path: escapedWriteTarget, content: "pwn" })).toThrow(
+          /outside workspace/i,
+        );
+        await expect(
+          writeHandler({ path: escapedWriteTarget, content: "pwn" }),
+        ).rejects.toThrow(/outside workspace/i);
+
+        expect(() =>
+          editSync({ path: escapedTarget, oldText: "top secret", newText: "pwned" }),
+        ).toThrow(/outside workspace/i);
+      } finally {
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it("bash cwd outside workspace is rejected", async () => {
+      tmpDir = await makeTmp("tools-jail-bash-");
+      expect(() => bashSync({ command: "pwd", cwd: "/etc" })).toThrow(
+        /outside workspace/i,
+      );
+      await expect(bashHandler({ command: "pwd", cwd: "/etc" })).rejects.toThrow(
+        /outside workspace/i,
+      );
+    });
+  });
+
+  describe("security knife: bash caps (timeout and maxBuffer)", () => {
+    it("bash timeout fires and returns non-zero with stderr mentioning timeout", async () => {
+      const res = bashSync("sleep 1", { timeoutMs: 50 });
+      expect(res.success).toBe(false);
+      expect(res.exitCode).not.toBe(0);
+      expect(res.stderr).toMatch(/timed out|timeout/i);
+
+      const asyncRes = await bashHandler({ command: "sleep 1", timeoutMs: 50 });
+      expect(asyncRes.success).toBe(false);
+      expect(asyncRes.exitCode).not.toBe(0);
+      expect(asyncRes.stderr).toMatch(/timed out|timeout/i);
+    });
+
+    it("output cap fires and throws on output overflow", async () => {
+      expect(() =>
+        bashSync("yes | head -n 50000", { maxBuffer: 100 }),
+      ).toThrow(/overflow|limit|exceeded/i);
+
+      await expect(
+        bashHandler("yes | head -n 50000", { maxBuffer: 100 }),
+      ).rejects.toThrow(/overflow|limit|exceeded/i);
+    });
   });
 });
