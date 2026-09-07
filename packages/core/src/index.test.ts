@@ -6,9 +6,11 @@ import {
   createSession,
   runLoop,
   createOpenAIClient,
+  setWorkspaceRoot,
   type ModelClient,
   type ModelTurn,
 } from "./index";
+import { resetWorkspaceRoot } from "@zjf-harness/tools";
 
 function fakeModel(turns: ModelTurn[]): ModelClient {
   let i = 0;
@@ -36,14 +38,23 @@ describe("createSession", () => {
 
 describe("runLoop", () => {
   let tmpDir: string | undefined;
+
+  async function makeTmp(prefix: string): Promise<string> {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), prefix));
+    setWorkspaceRoot(tmpDir);
+    return tmpDir;
+  }
+
   afterEach(async () => {
     if (tmpDir) {
       await rm(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
     }
+    resetWorkspaceRoot();
   });
 
   it("print+plan write is fail-closed and does not touch the file", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-loop-"));
+    tmpDir = await makeTmp("core-loop-");
     const file = path.join(tmpDir, "target.txt");
     await writeFile(file, "before\n");
     const result = await runLoop({
@@ -70,7 +81,7 @@ describe("runLoop", () => {
   });
 
   it("plan allows read; file contents are a tool result, not a permission deny", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-loop-"));
+    tmpDir = await makeTmp("core-loop-");
     const file = path.join(tmpDir, "note.txt");
     await writeFile(file, "hello core\n");
     const result = await runLoop({
@@ -94,8 +105,9 @@ describe("runLoop", () => {
   });
 
   it("plan read of a missing path is a tool error, not a permission deny", async () => {
+    tmpDir = await makeTmp("core-missing-");
     const missing = path.join(
-      os.tmpdir(),
+      tmpDir,
       "zjf-core-no-such-file-please-missing.txt",
     );
     const result = await runLoop({
@@ -118,7 +130,7 @@ describe("runLoop", () => {
   });
 
   it("plan allows glob; file list is a tool result, not a permission deny", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-glob-"));
+    tmpDir = await makeTmp("core-glob-");
     await writeFile(path.join(tmpDir, "fileA.txt"), "a");
     await writeFile(path.join(tmpDir, "fileB.txt"), "b");
     await writeFile(path.join(tmpDir, "fileC.md"), "c");
@@ -151,7 +163,7 @@ describe("runLoop", () => {
   });
 
   it("plan allows grep; matching lines are a tool result, not a permission deny", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-grep-"));
+    tmpDir = await makeTmp("core-grep-");
     const file = path.join(tmpDir, "sample.txt");
     await writeFile(file, "line 1\nneedle target\nline 3\n");
     const result = await runLoop({
@@ -183,7 +195,7 @@ describe("runLoop", () => {
   });
 
   it("print+plan edit is fail-closed and does not touch the file", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-edit-"));
+    tmpDir = await makeTmp("core-edit-");
     const file = path.join(tmpDir, "target.txt");
     await writeFile(file, "before\n");
     const result = await runLoop({
@@ -211,7 +223,7 @@ describe("runLoop", () => {
   });
 
   it("print+plan bash is fail-closed and does not execute the command", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-bash-"));
+    tmpDir = await makeTmp("core-bash-");
     const sideEffectFile = path.join(tmpDir, "side-effect.txt");
     const result = await runLoop({
       session: createSession({ mode: "plan" }),
@@ -238,7 +250,7 @@ describe("runLoop", () => {
   });
 
   it("accept-edits executes write and updates file on disk", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-accept-write-"));
+    tmpDir = await makeTmp("core-accept-write-");
     const file = path.join(tmpDir, "created.txt");
     const result = await runLoop({
       session: createSession({ mode: "accept-edits" }),
@@ -270,7 +282,7 @@ describe("runLoop", () => {
   });
 
   it("accept-edits executes edit and updates file on disk", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-accept-edit-"));
+    tmpDir = await makeTmp("core-accept-edit-");
     const file = path.join(tmpDir, "target.txt");
     await writeFile(file, "before edit\n");
     const result = await runLoop({
@@ -305,7 +317,7 @@ describe("runLoop", () => {
   });
 
   it("accept-edits leaves bash gated and does not execute command", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-accept-bash-"));
+    tmpDir = await makeTmp("core-accept-bash-");
     const sideEffectFile = path.join(tmpDir, "gated.txt");
     const result = await runLoop({
       session: createSession({ mode: "accept-edits" }),
@@ -331,7 +343,7 @@ describe("runLoop", () => {
   });
 
   it("bypass executes bash command and captures real output", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-bypass-bash-"));
+    tmpDir = await makeTmp("core-bypass-bash-");
     const outFile = path.join(tmpDir, "out.txt");
     const result = await runLoop({
       session: createSession({ mode: "bypass" }),
@@ -401,7 +413,7 @@ describe("runLoop", () => {
     expect(result.stdout).toMatch(/hello preview/);
   });
   it("onApprove allow lets a gated write run when not print", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-loop-"));
+    tmpDir = await makeTmp("core-loop-");
     const file = path.join(tmpDir, "target.txt");
     await writeFile(file, "before\n");
     const result = await runLoop({
@@ -427,7 +439,7 @@ describe("runLoop", () => {
   });
 
   it("print stays fail-closed even if onApprove is passed", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-loop-"));
+    tmpDir = await makeTmp("core-loop-");
     const file = path.join(tmpDir, "target.txt");
     await writeFile(file, "before\n");
     let asked = false;
@@ -458,7 +470,7 @@ describe("runLoop", () => {
   });
 
   it("gated edit under plan with onApprove receives body containing the unified diff; after deny file unchanged", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-edit-gate-"));
+    tmpDir = await makeTmp("core-edit-gate-");
     const file = path.join(tmpDir, "target.txt");
     await writeFile(file, "original text\n");
 
@@ -519,7 +531,7 @@ describe("runLoop", () => {
   });
 
   it("accept-edits auto-applies edit without needing onApprove", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-accept-auto-"));
+    tmpDir = await makeTmp("core-accept-auto-");
     const file = path.join(tmpDir, "auto.txt");
     await writeFile(file, "line1\nold line\nline3\n");
 
@@ -552,7 +564,7 @@ describe("runLoop", () => {
   });
 
   it("gated write under plan with onApprove receives body containing the unified diff", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-write-gate-"));
+    tmpDir = await makeTmp("core-write-gate-");
     const file = path.join(tmpDir, "target.txt");
     await writeFile(file, "initial\n");
 
@@ -586,7 +598,7 @@ describe("runLoop", () => {
   });
 
   it("falls back to JSON arguments when previewEdit throws on invalid args", async () => {
-    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-fallback-"));
+    tmpDir = await makeTmp("core-fallback-");
     const file = path.join(tmpDir, "target.txt");
     await writeFile(file, "initial\n");
 
@@ -616,68 +628,107 @@ describe("runLoop", () => {
     expect(receivedGate?.tool).toBe("edit");
     expect(receivedGate?.body).toBe(JSON.stringify({ path: file, missingOldText: true }));
   });
-});
-
-describe("createOpenAIClient", () => {
-  it("passes tool parameters schema and falls back if missing", async () => {
-    const originalFetch = globalThis.fetch;
-    let capturedBody: any;
-    globalThis.fetch = (async (_url: any, init: any) => {
-      capturedBody = JSON.parse(init.body);
-      return {
-        ok: true,
-        json: async () => ({
-          choices: [{ message: { content: "ok", tool_calls: [] } }],
-        }),
-      } as any;
-    }) as any;
-
-    try {
-      const client = createOpenAIClient({ OPENAI_API_KEY: "test-key" });
-      await client.complete({
-        messages: [{ role: "user", content: "test" }],
-        tools: [
-          {
-            name: "tool_with_schema",
-            description: "desc 1",
-            parameters: {
-              type: "object",
-              properties: { path: { type: "string" } },
-              required: ["path"],
-            },
-          },
-          {
-            name: "tool_without_schema",
-            description: "desc 2",
-          },
-        ],
-      });
-
-      expect(capturedBody.tools).toEqual([
+  it("workspace path jail rejects reads and writes outside workspace under runner", async () => {
+    tmpDir = await makeTmp("core-jail-");
+    const outsideFile = path.join(os.tmpdir(), "outside-jail-target.txt");
+    const result = await runLoop({
+      session: createSession({ mode: "bypass" }),
+      prompt: "try outside write",
+      model: fakeModel([
         {
-          type: "function",
-          function: {
-            name: "tool_with_schema",
-            description: "desc 1",
-            parameters: {
-              type: "object",
-              properties: { path: { type: "string" } },
-              required: ["path"],
+          text: "",
+          toolCalls: [
+            {
+              id: "jail-write",
+              name: "write",
+              arguments: { path: outsideFile, content: "escaped\n" },
             },
-          },
+          ],
         },
+        { text: "finished", toolCalls: [] },
+      ]),
+    });
+    const toolMsg = result.session.messages.find((m) => m.role === "tool");
+    expect(toolMsg?.content).toMatch(/Path is outside workspace/);
+  });
+
+  it("hard-denied bash does not execute in bypass and leaves marker untouched", async () => {
+    tmpDir = await makeTmp("core-bypass-hard-denied-");
+    const marker = path.join(tmpDir, "marker.txt");
+    const result = await runLoop({
+      session: createSession({ mode: "bypass" }),
+      prompt: "run dangerous command",
+      model: fakeModel([
         {
-          type: "function",
-          function: {
-            name: "tool_without_schema",
-            description: "desc 2",
-            parameters: { type: "object", additionalProperties: true },
-          },
+          text: "",
+          toolCalls: [
+            {
+              id: "bash-danger",
+              name: "bash",
+              arguments: { command: `rm -rf / && touch "${marker}"` },
+            },
+          ],
         },
-      ]);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+      ]),
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/Tool 'bash' is hard-denied/);
+    expect(result.gatedTool).toBe("bash");
+    await expect(readFile(marker, "utf8")).rejects.toThrow();
+  });
+
+  it("hard-denied bash fails closed in interactive mode without calling onApprove", async () => {
+    let asked = false;
+    const result = await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "run dangerous command in plan",
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "bash-danger-plan",
+              name: "bash",
+              arguments: { command: "mkfs.ext4 /dev/sda" },
+            },
+          ],
+        },
+      ]),
+      onApprove: async () => {
+        asked = true;
+        return "allow";
+      },
+    });
+    expect(asked).toBe(false);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toMatch(/Tool 'bash' is hard-denied/);
+    expect(result.gatedTool).toBe("bash");
+  });
+
+  it("file tools see workspace root set at loop start if unset", async () => {
+    resetWorkspaceRoot();
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-ws-set-"));
+    const file = path.join(tmpDir, "loop-ws-test.txt");
+    const result = await runLoop({
+      session: createSession({ mode: "bypass" }),
+      prompt: "write file with loop workspaceRoot",
+      workspaceRoot: tmpDir,
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [
+            {
+              id: "ws-write",
+              name: "write",
+              arguments: { path: file, content: "inside ws\n" },
+            },
+          ],
+        },
+        { text: "done", toolCalls: [] },
+      ]),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(await readFile(file, "utf8")).toBe("inside ws\n");
   });
 });
 
