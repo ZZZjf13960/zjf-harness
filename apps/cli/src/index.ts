@@ -3,16 +3,20 @@ import { pathToFileURL } from "node:url";
 import {
   runCli,
   runPreview,
+  runRpc,
   runTui,
   shouldRunPreview,
+  shouldRunRpc,
   shouldRunTui,
 } from "./run.ts";
 
 export {
   runCli,
   runPreview,
+  runRpc,
   runTui,
   shouldRunPreview,
+  shouldRunRpc,
   shouldRunTui,
 } from "./run.ts";
 export type { CliResult } from "./run";
@@ -25,6 +29,12 @@ function isDirectRun(): boolean {
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
+  if (shouldRunRpc(argv)) {
+    const result = await runRpc(argv);
+    // RPC serve already wrote JSONL to stdout; only forward stderr/exit.
+    if (result.stderr) process.stderr.write(result.stderr);
+    process.exit(result.exitCode);
+  }
   const result = shouldRunTui(argv)
     ? await runTui(argv)
     : shouldRunPreview(argv)

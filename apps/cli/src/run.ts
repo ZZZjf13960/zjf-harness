@@ -22,6 +22,7 @@ import {
   runLoop,
   type ModelClient,
 } from "@zjf-harness/core";
+import { createRpcServer } from "@zjf-harness/rpc";
 import {
   NativeTerminalTui,
   acceptPlan,
@@ -46,6 +47,7 @@ function usage(): string {
     "Options:",
     "  --mode <mode>        Permission mode: plan | accept-edits | bypass (default: plan)",
     "  -p, --print          Non-interactive print mode (does not change permission mode)",
+    "  --rpc                JSON-RPC 2.0 over stdin/stdout (JSONL)",
     "  --workspace <path>   Workspace directory (default: cwd)",
     "  --read <path>        Request read of file at path",
     "  --write <path>       Request write of 'after\\n' to path",
@@ -580,6 +582,7 @@ export function isOneShotTool(argv: string[]): boolean {
 export function shouldRunPreview(argv: string[]): boolean {
   if (isOneShotTool(argv)) return false;
   if (argv.includes("-h") || argv.includes("--help")) return false;
+  if (argv.includes("--rpc")) return false;
   return previewPrompt(argv) !== undefined;
 }
 
@@ -591,6 +594,7 @@ export function shouldRunTui(
   if (isOneShotTool(argv)) return false;
   if (argv.includes("-h") || argv.includes("--help")) return false;
   if (argv.includes("-p") || argv.includes("--print")) return false;
+  if (argv.includes("--rpc")) return false;
   return true;
 }
 
@@ -856,4 +860,65 @@ export async function runPreview(
       stderr: message.endsWith("\n") ? message : message + "\n",
     };
   }
+}
+
+export function shouldRunRpc(argv: string[]): boolean {
+  return argv.includes("--rpc");
+}
+
+function extractModeArg(argv: string[]): {
+  modeRaw: string | undefined;
+  error?: string;
+} {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (arg === "--mode") {
+      const next = argv[i + 1];
+      if (!next || next.startsWith("-")) {
+        return {
+          modeRaw: undefined,
+          error:
+            "Missing value for --mode. Legal values: " +
+            PERMISSION_MODES.join(", ") +
+            "\n",
+        };
+      }
+      return { modeRaw: next };
+    }
+    if (arg.startsWith("--mode=")) {
+      return { modeRaw: arg.slice("--mode=".length) };
+    }
+  }
+  return { modeRaw: undefined };
+}
+
+export async function runRpc(argv: string[]): Promise<CliResult> {
+  const modeParsed = extractModeArg(argv);
+  if (modeParsed.error) {
+    return { exitCode: 1, stdout: "", stderr: modeParsed.error };
+  }
+  let mode: PermissionMode;
+  try {
+    mode = parsePermissionMode(modeParsed.modeRaw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: message.endsWith("\n") ? message : message + "\n",
+    };
+  }
+
+  const workspaceRoot = extractWorkspaceArg(argv);
+  const session = createSession({ mode, workspaceRoot });
+  const model = process.env.OPENAI_API_KEY
+    ? createOpenAIClient()
+    : undefined;
+  const server = createRpcServer({
+    session,
+    model,
+    workspaceRoot,
+  });
+  await server.serve(process.stdin, process.stdout);
+  return { exitCode: 0, stdout: "", stderr: "" };
 }
