@@ -15,6 +15,7 @@
   "dependencies": {
     "@zjf-harness/core": "workspace:*",
     "@zjf-harness/permissions": "workspace:*",
+    "@zjf-harness/rpc": "workspace:*",
     "@zjf-harness/tools": "workspace:*",
     "@zjf-harness/tui": "workspace:*"
   },
