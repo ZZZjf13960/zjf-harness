@@ -16,6 +16,6 @@ jobs:
       - run: corepack enable
       - run: pnpm install
       - name: typecheck
-        run: pnpm -r --if-present -F '!@zjf-harness/evals' typecheck
+        run: pnpm -r --if-present typecheck
       - name: test
-        run: pnpm -r --if-present -F '!@zjf-harness/evals' test
+        run: pnpm -r --if-present test
