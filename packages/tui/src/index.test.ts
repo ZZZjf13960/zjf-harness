@@ -10,7 +10,9 @@ import {
   statusBar,
   handleLine,
   approveLive,
+  NativeTerminalTui,
 } from "./index";
+import { Writable } from "node:stream";
 
 describe("acceptPlan", () => {
   it("switches plan to accept-edits", () => {
@@ -170,5 +172,55 @@ describe("approveLive", () => {
     );
     expect(decision).toBe("allow");
     expect(writes).toEqual([]);
+  });
+});
+
+describe("NativeTerminalTui streaming", () => {
+  function makeUi() {
+    const chunks: string[] = [];
+    const output = new Writable({
+      write(chunk, _enc, cb) {
+        chunks.push(String(chunk));
+        cb();
+      },
+    }) as NodeJS.WriteStream;
+    (output as any).columns = 80;
+    (output as any).rows = 24;
+    const input = new Writable() as unknown as NodeJS.ReadStream;
+    (input as any).isTTY = false;
+    (input as any).on = () => input;
+    (input as any).off = () => input;
+    (input as any).resume = () => input;
+    (input as any).pause = () => input;
+    const ui = new NativeTerminalTui({ input, output });
+    ui.open("plan");
+    return { ui, chunks };
+  }
+
+  it("appendStream then endStream produces an assistant message", () => {
+    const { ui } = makeUi();
+    ui.beginStream();
+    ui.appendStream("Hello ");
+    ui.appendStream("world");
+    expect(ui.debugState().streamBuffer).toBe("Hello world");
+    expect(ui.debugState().streaming).toBe(true);
+    ui.endStream();
+    const state = ui.debugState();
+    expect(state.streamBuffer).toBe("");
+    expect(state.streaming).toBe(false);
+    expect(state.messages).toContainEqual({
+      role: "assistant",
+      text: "Hello world",
+    });
+    ui.close();
+  });
+
+  it("setToolProgress updates debugState", () => {
+    const { ui } = makeUi();
+    ui.setToolProgress("running read");
+    expect(ui.debugState().toolProgress).toBe("running read");
+    ui.setToolProgress(undefined);
+    expect(ui.debugState().toolProgress).toBeUndefined();
+    ui.close();
   });
 });

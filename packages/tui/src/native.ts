@@ -131,6 +131,9 @@ export class NativeTerminalTui {
   private busy = false;
   private opened = false;
   private messages: Array<{ role: TuiMessageRole; text: string }> = [];
+  private streamBuffer = "";
+  private streaming = false;
+  private toolProgress: string | undefined;
   private approval?: ApprovalCard;
   private inputResolve?: (event: TuiInputEvent) => void;
   private approvalResolve?: (decision: ApprovalDecision) => void;
@@ -184,6 +187,50 @@ export class NativeTerminalTui {
     this.busy = busy;
     this.interrupt = busy ? interrupt : undefined;
     this.render();
+  }
+
+  beginStream(): void {
+    this.streamBuffer = "";
+    this.streaming = true;
+    this.render();
+  }
+
+  appendStream(text: string): void {
+    if (!this.streaming) {
+      this.streaming = true;
+    }
+    this.streamBuffer += text;
+    this.render();
+  }
+
+  endStream(): void {
+    const clean = this.streamBuffer.trim();
+    if (clean) {
+      this.messages.push({ role: "assistant", text: clean });
+    }
+    this.streamBuffer = "";
+    this.streaming = false;
+    this.render();
+  }
+
+  setToolProgress(label: string | undefined): void {
+    this.toolProgress = label;
+    this.render();
+  }
+
+  /** Test-only snapshot of live UI state. */
+  debugState(): {
+    messages: Array<{ role: TuiMessageRole; text: string }>;
+    streamBuffer: string;
+    toolProgress: string | undefined;
+    streaming: boolean;
+  } {
+    return {
+      messages: [...this.messages],
+      streamBuffer: this.streamBuffer,
+      toolProgress: this.toolProgress,
+      streaming: this.streaming,
+    };
   }
 
   readInput(): Promise<TuiInputEvent> {
@@ -336,6 +383,22 @@ export class NativeTerminalTui {
       }
       history.push("");
       history.push(" y allow   n deny   a allow for session   Esc interrupt");
+    } else if (this.streaming || this.toolProgress !== undefined) {
+      if (this.streaming && this.streamBuffer) {
+        const label = CYAN + "assistant" + RESET;
+        const lines = wrap(this.streamBuffer, Math.max(10, inner - 10));
+        history.push(" " + label + "  " + (lines.shift() ?? ""));
+        for (const line of lines) history.push("      " + line);
+        history.push("");
+      } else if (this.busy && !this.streamBuffer) {
+        history.push(CYAN + " assistant is working…" + RESET);
+      }
+      if (this.toolProgress !== undefined) {
+        history.push(YELLOW + " " + this.toolProgress + RESET);
+      }
+      if (this.busy) {
+        history.push(DIM + " Esc interrupts the current turn" + RESET);
+      }
     } else if (this.busy) {
       history.push(CYAN + " assistant is working…" + RESET);
       history.push(DIM + " Esc interrupts the current turn" + RESET);
@@ -362,7 +425,7 @@ export class NativeTerminalTui {
     const help = DIM + " Shift+Tab mode  /mode  /accept  /keep  Esc exit" + RESET;
     const prompt = this.approval
       ? DIM + " approval> " + RESET
-      : this.busy
+      : this.busy || this.streaming || this.toolProgress !== undefined
         ? DIM + " waiting for model…" + RESET
         : CYAN + " > " + RESET + this.line;
     const bottom = "└" + "─".repeat(inner) + "┘";

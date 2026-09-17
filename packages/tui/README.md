@@ -12,3 +12,4 @@ Owner：TUI 体验交互
 - 原生按键处理，无需按回车确认审批
 - Esc 退出输入、打断模型请求或中断审批
 - bypass 不弹卡；-p 不走卡，fail-closed
+- 流式展示 assistant 增量文本，并显示 tool 执行进度（tool.start / tool.end）

@@ -39,6 +39,12 @@ export type ModelTurn = {
   toolCalls: ToolCallRequest[];
 };
 
+export type LoopEvent =
+  | { type: "assistant.delta"; text: string }
+  | { type: "tool.start"; tool: string; id: string }
+  | { type: "tool.end"; tool: string; id: string; ok: boolean }
+  | { type: "turn.done" };
+
 export type ModelClient = {
   complete(input: {
     messages: ChatMessage[];
@@ -48,6 +54,7 @@ export type ModelClient = {
       parameters?: Record<string, unknown>;
     }[];
     signal?: AbortSignal;
+    onDelta?: (text: string) => void;
   }): Promise<ModelTurn>;
 };
 
@@ -114,6 +121,7 @@ export async function runLoop(input: {
     mode: PermissionMode;
     body?: string;
   }) => Promise<ApprovalDecision>;
+  onEvent?: (event: LoopEvent) => void;
 }): Promise<LoopResult> {
   const session = input.session;
   const print = input.print === true;
@@ -143,10 +151,14 @@ export async function runLoop(input: {
       description: tool.description,
       parameters: tool.parameters,
     }));
+    const onEvent = input.onEvent;
     const reply = await input.model.complete({
       messages: session.messages,
       tools,
       signal: input.signal,
+      onDelta: onEvent
+        ? (text) => onEvent({ type: "assistant.delta", text })
+        : undefined,
     });
 
     session.messages.push({
@@ -156,6 +168,7 @@ export async function runLoop(input: {
     });
 
     if (reply.toolCalls.length === 0) {
+      onEvent?.({ type: "turn.done" });
       let stdout = header + reply.text;
       if (reply.text && !reply.text.endsWith("\n")) {
         stdout += "\n";
@@ -261,6 +274,8 @@ export async function runLoop(input: {
 
       const tool = get(call.name);
       let content: string;
+      let ok = true;
+      onEvent?.({ type: "tool.start", tool: call.name, id: call.id });
       try {
         if (!tool) {
           content = JSON.stringify({ error: "unknown tool: " + call.name });
@@ -269,8 +284,15 @@ export async function runLoop(input: {
           content = typeof value === "string" ? value : JSON.stringify(value);
         }
       } catch (err) {
+        ok = false;
         content = err instanceof Error ? err.message : String(err);
       }
+      onEvent?.({
+        type: "tool.end",
+        tool: call.name,
+        id: call.id,
+        ok,
+      });
       session.messages.push({
         role: "tool",
         toolCallId: call.id,
@@ -331,21 +353,26 @@ export function createOpenAIClient(
         }
         return { role: message.role, content: message.content };
       });
-      const body = {
+      const tools = input.tools.map((tool) => ({
+        type: "function",
+        function: {
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters ?? {
+            type: "object",
+            additionalProperties: true,
+          },
+        },
+      }));
+      const stream = typeof input.onDelta === "function";
+      const body: Record<string, unknown> = {
         model,
         messages,
-        tools: input.tools.map((tool) => ({
-          type: "function",
-          function: {
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters ?? {
-              type: "object",
-              additionalProperties: true,
-            },
-          },
-        })),
+        tools,
       };
+      if (stream) {
+        body.stream = true;
+      }
       const response = await fetch(baseUrl + "/chat/completions", {
         method: "POST",
         headers: {
@@ -361,34 +388,138 @@ export function createOpenAIClient(
           "Model request failed: " + response.status + " " + errText,
         );
       }
-      const json = (await response.json()) as {
-        choices?: Array<{
-          message?: {
-            content?: string | null;
-            tool_calls?: Array<{
-              id: string;
-              function?: { name?: string; arguments?: string };
-            }>;
-          };
-        }>;
+
+      if (!stream) {
+        const json = (await response.json()) as {
+          choices?: Array<{
+            message?: {
+              content?: string | null;
+              tool_calls?: Array<{
+                id: string;
+                function?: { name?: string; arguments?: string };
+              }>;
+            };
+          }>;
+        };
+        const message = json.choices?.[0]?.message;
+        const toolCalls: ToolCallRequest[] = (message?.tool_calls ?? []).map(
+          (call) => {
+            let args: unknown = {};
+            try {
+              args = JSON.parse(call.function?.arguments || "{}");
+            } catch {
+              args = { raw: call.function?.arguments };
+            }
+            return {
+              id: call.id,
+              name: call.function?.name ?? "unknown",
+              arguments: args,
+            };
+          },
+        );
+        return { text: message?.content ?? "", toolCalls };
+      }
+
+      if (!response.body) {
+        throw new Error("Model request failed: missing response body for stream");
+      }
+
+      type PartialToolCall = {
+        id: string;
+        name: string;
+        arguments: string;
       };
-      const message = json.choices?.[0]?.message;
-      const toolCalls: ToolCallRequest[] = (message?.tool_calls ?? []).map(
-        (call) => {
+      const toolAcc = new Map<number, PartialToolCall>();
+      let text = "";
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      const flushLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith(":")) return;
+        if (!trimmed.startsWith("data:")) return;
+        const data = trimmed.slice(5).trim();
+        if (!data || data === "[DONE]") return;
+        let parsed: {
+          choices?: Array<{
+            delta?: {
+              content?: string | null;
+              tool_calls?: Array<{
+                index?: number;
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              }>;
+            };
+          }>;
+        };
+        try {
+          parsed = JSON.parse(data);
+        } catch {
+          return;
+        }
+        const delta = parsed.choices?.[0]?.delta;
+        if (!delta) return;
+        if (typeof delta.content === "string" && delta.content.length > 0) {
+          text += delta.content;
+          input.onDelta?.(delta.content);
+        }
+        for (const part of delta.tool_calls ?? []) {
+          const index = part.index ?? 0;
+          const current = toolAcc.get(index) ?? {
+            id: "",
+            name: "",
+            arguments: "",
+          };
+          if (part.id) current.id = part.id;
+          if (part.function?.name) current.name = part.function.name;
+          if (part.function?.arguments) {
+            current.arguments += part.function.arguments;
+          }
+          toolAcc.set(index, current);
+        }
+      };
+
+      while (true) {
+        if (input.signal?.aborted) {
+          try {
+            await reader.cancel();
+          } catch {
+            // ignore cancel errors
+          }
+          throw new DOMException("The operation was aborted.", "AbortError");
+        }
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let newline = buffer.indexOf("\n");
+        while (newline >= 0) {
+          const line = buffer.slice(0, newline);
+          buffer = buffer.slice(newline + 1);
+          flushLine(line);
+          newline = buffer.indexOf("\n");
+        }
+      }
+      if (buffer.trim()) {
+        flushLine(buffer);
+      }
+
+      const toolCalls: ToolCallRequest[] = [...toolAcc.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([, call]) => {
           let args: unknown = {};
           try {
-            args = JSON.parse(call.function?.arguments || "{}");
+            args = JSON.parse(call.arguments || "{}");
           } catch {
-            args = { raw: call.function?.arguments };
+            args = { raw: call.arguments };
           }
           return {
-            id: call.id,
-            name: call.function?.name ?? "unknown",
+            id: call.id || "tool_call",
+            name: call.name || "unknown",
             arguments: args,
           };
-        },
-      );
-      return { text: message?.content ?? "", toolCalls };
+        });
+      return { text, toolCalls };
     },
   };
 }
