@@ -314,8 +314,114 @@ export function missingApiKeyMessage(): string {
   return "Missing OPENAI_API_KEY. Set OPENAI_API_KEY (optional OPENAI_BASE_URL, OPENAI_MODEL) to run a live preview.\n";
 }
 
+/** Hard timeout for a single model.complete attempt (fetch + body/stream read). */
+export const DEFAULT_MODEL_TIMEOUT_MS = 60_000;
+/** Retries after the first attempt for HTTP 429 / 5xx only (total attempts = maxRetries + 1). */
+export const DEFAULT_MODEL_MAX_RETRIES = 2;
+/** Base delay for exponential backoff: delayMs = base * 2^attemptIndex. */
+export const DEFAULT_MODEL_RETRY_BASE_DELAY_MS = 250;
+
+export type CreateOpenAIClientOptions = {
+  timeoutMs?: number;
+  maxRetries?: number;
+  retryBaseDelayMs?: number;
+};
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof Error && err.name === "AbortError") return true;
+  return false;
+}
+
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function mergeTimeoutSignal(
+  caller: AbortSignal | undefined,
+  timeoutMs: number,
+): { signal: AbortSignal; didTimeout: () => boolean; cleanup: () => void } {
+  const timeoutController = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    timeoutController.abort(
+      new DOMException(
+        `Model request timed out after ${timeoutMs}ms`,
+        "TimeoutError",
+      ),
+    );
+  }, timeoutMs);
+
+  const cleanup = () => {
+    clearTimeout(timer);
+  };
+
+  if (!caller) {
+    return {
+      signal: timeoutController.signal,
+      didTimeout: () => timedOut,
+      cleanup,
+    };
+  }
+
+  if (typeof AbortSignal.any === "function") {
+    return {
+      signal: AbortSignal.any([caller, timeoutController.signal]),
+      didTimeout: () => timedOut && !caller.aborted,
+      cleanup,
+    };
+  }
+
+  const merged = new AbortController();
+  const forward = () => {
+    if (merged.signal.aborted) return;
+    if (caller.aborted) {
+      merged.abort(caller.reason);
+      return;
+    }
+    if (timeoutController.signal.aborted) {
+      merged.abort(timeoutController.signal.reason);
+    }
+  };
+  if (caller.aborted || timeoutController.signal.aborted) {
+    forward();
+  } else {
+    caller.addEventListener("abort", forward, { once: true });
+    timeoutController.signal.addEventListener("abort", forward, { once: true });
+  }
+  return {
+    signal: merged.signal,
+    didTimeout: () => timedOut && !caller.aborted,
+    cleanup: () => {
+      clearTimeout(timer);
+      caller.removeEventListener("abort", forward);
+      timeoutController.signal.removeEventListener("abort", forward);
+    },
+  };
+}
+
 export function createOpenAIClient(
   env: NodeJS.Dict<string> = process.env,
+  options?: CreateOpenAIClientOptions,
 ): ModelClient {
   const apiKey = env.OPENAI_API_KEY;
   const baseUrl = (env.OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(
@@ -323,6 +429,10 @@ export function createOpenAIClient(
     "",
   );
   const model = env.OPENAI_MODEL ?? "gpt-4o-mini";
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_MODEL_TIMEOUT_MS;
+  const maxRetries = options?.maxRetries ?? DEFAULT_MODEL_MAX_RETRIES;
+  const retryBaseDelayMs =
+    options?.retryBaseDelayMs ?? DEFAULT_MODEL_RETRY_BASE_DELAY_MS;
 
   return {
     async complete(input) {
@@ -373,153 +483,222 @@ export function createOpenAIClient(
       if (stream) {
         body.stream = true;
       }
-      const response = await fetch(baseUrl + "/chat/completions", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: "Bearer " + apiKey,
-        },
-        body: JSON.stringify(body),
-        signal: input.signal,
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(
-          "Model request failed: " + response.status + " " + errText,
-        );
-      }
 
-      if (!stream) {
-        const json = (await response.json()) as {
-          choices?: Array<{
-            message?: {
-              content?: string | null;
-              tool_calls?: Array<{
-                id: string;
-                function?: { name?: string; arguments?: string };
-              }>;
-            };
-          }>;
-        };
-        const message = json.choices?.[0]?.message;
-        const toolCalls: ToolCallRequest[] = (message?.tool_calls ?? []).map(
-          (call) => {
-            let args: unknown = {};
-            try {
-              args = JSON.parse(call.function?.arguments || "{}");
-            } catch {
-              args = { raw: call.function?.arguments };
-            }
-            return {
-              id: call.id,
-              name: call.function?.name ?? "unknown",
-              arguments: args,
-            };
-          },
-        );
-        return { text: message?.content ?? "", toolCalls };
-      }
-
-      if (!response.body) {
-        throw new Error("Model request failed: missing response body for stream");
-      }
-
-      type PartialToolCall = {
-        id: string;
-        name: string;
-        arguments: string;
-      };
-      const toolAcc = new Map<number, PartialToolCall>();
-      let text = "";
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      const flushLine = (line: string) => {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith(":")) return;
-        if (!trimmed.startsWith("data:")) return;
-        const data = trimmed.slice(5).trim();
-        if (!data || data === "[DONE]") return;
-        let parsed: {
-          choices?: Array<{
-            delta?: {
-              content?: string | null;
-              tool_calls?: Array<{
-                index?: number;
-                id?: string;
-                function?: { name?: string; arguments?: string };
-              }>;
-            };
-          }>;
-        };
-        try {
-          parsed = JSON.parse(data);
-        } catch {
-          return;
-        }
-        const delta = parsed.choices?.[0]?.delta;
-        if (!delta) return;
-        if (typeof delta.content === "string" && delta.content.length > 0) {
-          text += delta.content;
-          input.onDelta?.(delta.content);
-        }
-        for (const part of delta.tool_calls ?? []) {
-          const index = part.index ?? 0;
-          const current = toolAcc.get(index) ?? {
-            id: "",
-            name: "",
-            arguments: "",
-          };
-          if (part.id) current.id = part.id;
-          if (part.function?.name) current.name = part.function.name;
-          if (part.function?.arguments) {
-            current.arguments += part.function.arguments;
-          }
-          toolAcc.set(index, current);
-        }
-      };
-
-      while (true) {
+      let lastError: Error | undefined;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (input.signal?.aborted) {
-          try {
-            await reader.cancel();
-          } catch {
-            // ignore cancel errors
-          }
           throw new DOMException("The operation was aborted.", "AbortError");
         }
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let newline = buffer.indexOf("\n");
-        while (newline >= 0) {
-          const line = buffer.slice(0, newline);
-          buffer = buffer.slice(newline + 1);
-          flushLine(line);
-          newline = buffer.indexOf("\n");
+
+        const {
+          signal,
+          didTimeout,
+          cleanup,
+        } = mergeTimeoutSignal(input.signal, timeoutMs);
+
+        try {
+          const response = await fetch(baseUrl + "/chat/completions", {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              authorization: "Bearer " + apiKey,
+            },
+            body: JSON.stringify(body),
+            signal,
+          });
+
+          if (!response.ok) {
+            const errText = await response.text().catch(() => "");
+            const error = new Error(
+              "Model request failed: " + response.status + " " + errText,
+            );
+            if (
+              isRetryableStatus(response.status) &&
+              attempt < maxRetries &&
+              !input.signal?.aborted
+            ) {
+              lastError = error;
+              await delay(retryBaseDelayMs * 2 ** attempt, input.signal);
+              continue;
+            }
+            throw error;
+          }
+
+          if (!stream) {
+            const json = (await response.json()) as {
+              choices?: Array<{
+                message?: {
+                  content?: string | null;
+                  tool_calls?: Array<{
+                    id: string;
+                    function?: { name?: string; arguments?: string };
+                  }>;
+                };
+              }>;
+            };
+            const message = json.choices?.[0]?.message;
+            const toolCalls: ToolCallRequest[] = (message?.tool_calls ?? []).map(
+              (call) => {
+                let args: unknown = {};
+                try {
+                  args = JSON.parse(call.function?.arguments || "{}");
+                } catch {
+                  args = { raw: call.function?.arguments };
+                }
+                return {
+                  id: call.id,
+                  name: call.function?.name ?? "unknown",
+                  arguments: args,
+                };
+              },
+            );
+            return { text: message?.content ?? "", toolCalls };
+          }
+
+          if (!response.body) {
+            throw new Error(
+              "Model request failed: missing response body for stream",
+            );
+          }
+
+          type PartialToolCall = {
+            id: string;
+            name: string;
+            arguments: string;
+          };
+          const toolAcc = new Map<number, PartialToolCall>();
+          let text = "";
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+
+          const flushLine = (line: string) => {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith(":")) return;
+            if (!trimmed.startsWith("data:")) return;
+            const data = trimmed.slice(5).trim();
+            if (!data || data === "[DONE]") return;
+            let parsed: {
+              choices?: Array<{
+                delta?: {
+                  content?: string | null;
+                  tool_calls?: Array<{
+                    index?: number;
+                    id?: string;
+                    function?: { name?: string; arguments?: string };
+                  }>;
+                };
+              }>;
+            };
+            try {
+              parsed = JSON.parse(data);
+            } catch {
+              return;
+            }
+            const delta = parsed.choices?.[0]?.delta;
+            if (!delta) return;
+            if (typeof delta.content === "string" && delta.content.length > 0) {
+              text += delta.content;
+              input.onDelta?.(delta.content);
+            }
+            for (const part of delta.tool_calls ?? []) {
+              const index = part.index ?? 0;
+              const current = toolAcc.get(index) ?? {
+                id: "",
+                name: "",
+                arguments: "",
+              };
+              if (part.id) current.id = part.id;
+              if (part.function?.name) current.name = part.function.name;
+              if (part.function?.arguments) {
+                current.arguments += part.function.arguments;
+              }
+              toolAcc.set(index, current);
+            }
+          };
+
+          while (true) {
+            if (signal.aborted) {
+              try {
+                await reader.cancel();
+              } catch {
+                // ignore cancel errors
+              }
+              if (didTimeout()) {
+                throw new Error(
+                  `Model request timed out after ${timeoutMs}ms`,
+                );
+              }
+              throw new DOMException(
+                "The operation was aborted.",
+                "AbortError",
+              );
+            }
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let newline = buffer.indexOf("\n");
+            while (newline >= 0) {
+              const line = buffer.slice(0, newline);
+              buffer = buffer.slice(newline + 1);
+              flushLine(line);
+              newline = buffer.indexOf("\n");
+            }
+          }
+          if (buffer.trim()) {
+            flushLine(buffer);
+          }
+
+          const toolCalls: ToolCallRequest[] = [...toolAcc.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([, call]) => {
+              let args: unknown = {};
+              try {
+                args = JSON.parse(call.arguments || "{}");
+              } catch {
+                args = { raw: call.arguments };
+              }
+              return {
+                id: call.id || "tool_call",
+                name: call.name || "unknown",
+                arguments: args,
+              };
+            });
+          return { text, toolCalls };
+        } catch (err) {
+          if (input.signal?.aborted) {
+            throw isAbortError(err)
+              ? err
+              : new DOMException("The operation was aborted.", "AbortError");
+          }
+          if (didTimeout() || (isAbortError(err) && didTimeout())) {
+            throw new Error(`Model request timed out after ${timeoutMs}ms`);
+          }
+          // Timeout may surface as AbortError from fetch before didTimeout is observed
+          // on some runtimes; treat TimeoutError reason as timeout.
+          const reason =
+            err instanceof DOMException
+              ? err
+              : err instanceof Error
+                ? err.cause
+                : undefined;
+          if (
+            (err instanceof DOMException && err.name === "TimeoutError") ||
+            (reason instanceof DOMException && reason.name === "TimeoutError") ||
+            (err instanceof Error &&
+              /timed out after \d+ms/.test(err.message))
+          ) {
+            throw err instanceof Error && /timed out after/.test(err.message)
+              ? err
+              : new Error(`Model request timed out after ${timeoutMs}ms`);
+          }
+          throw err;
+        } finally {
+          cleanup();
         }
       }
-      if (buffer.trim()) {
-        flushLine(buffer);
-      }
 
-      const toolCalls: ToolCallRequest[] = [...toolAcc.entries()]
-        .sort((a, b) => a[0] - b[0])
-        .map(([, call]) => {
-          let args: unknown = {};
-          try {
-            args = JSON.parse(call.arguments || "{}");
-          } catch {
-            args = { raw: call.arguments };
-          }
-          return {
-            id: call.id || "tool_call",
-            name: call.name || "unknown",
-            arguments: args,
-          };
-        });
-      return { text, toolCalls };
+      throw lastError ?? new Error("Model request failed");
     },
   };
 }
