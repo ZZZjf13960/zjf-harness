@@ -7,6 +7,7 @@ import {
   runLoop,
   createOpenAIClient,
   setWorkspaceRoot,
+  type LoopEvent,
   type ModelClient,
   type ModelTurn,
 } from "./index";
@@ -732,6 +733,74 @@ describe("runLoop", () => {
   });
 });
 
+
+describe("runLoop onEvent streaming", () => {
+  let tmpDir: string | undefined;
+
+  afterEach(async () => {
+    if (tmpDir) {
+      await rm(tmpDir, { recursive: true, force: true });
+      tmpDir = undefined;
+    }
+    resetWorkspaceRoot();
+  });
+
+  it("forwards onDelta as assistant.delta then turn.done", async () => {
+    const events: LoopEvent[] = [];
+    const model: ModelClient = {
+      async complete(input) {
+        input.onDelta?.("Hel");
+        input.onDelta?.("lo");
+        input.onDelta?.("!");
+        return { text: "Hello!", toolCalls: [] };
+      },
+    };
+    const result = await runLoop({
+      session: createSession(),
+      prompt: "hi",
+      model,
+      onEvent: (event) => events.push(event),
+    });
+    expect(result.exitCode).toBe(0);
+    expect(events).toEqual([
+      { type: "assistant.delta", text: "Hel" },
+      { type: "assistant.delta", text: "lo" },
+      { type: "assistant.delta", text: "!" },
+      { type: "turn.done" },
+    ]);
+  });
+
+  it("emits tool.start then tool.end around an allowed read", async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "core-stream-tool-"));
+    setWorkspaceRoot(tmpDir);
+    const file = path.join(tmpDir, "note.txt");
+    await writeFile(file, "stream tool\n");
+    const events: LoopEvent[] = [];
+    const result = await runLoop({
+      session: createSession({ mode: "plan" }),
+      prompt: "read it",
+      print: true,
+      model: fakeModel([
+        {
+          text: "",
+          toolCalls: [{ id: "read-1", name: "read", arguments: { path: file } }],
+        },
+        { text: "done reading", toolCalls: [] },
+      ]),
+      onEvent: (event) => events.push(event),
+    });
+    expect(result.exitCode).toBe(0);
+    const toolEvents = events.filter(
+      (e) => e.type === "tool.start" || e.type === "tool.end",
+    );
+    expect(toolEvents).toEqual([
+      { type: "tool.start", tool: "read", id: "read-1" },
+      { type: "tool.end", tool: "read", id: "read-1", ok: true },
+    ]);
+    expect(events.at(-1)).toEqual({ type: "turn.done" });
+  });
+});
+
 describe("createOpenAIClient", () => {
   it("passes tool parameters schema and falls back if missing", async () => {
     const originalFetch = globalThis.fetch;
@@ -789,6 +858,75 @@ describe("createOpenAIClient", () => {
           },
         },
       ]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("streams SSE content deltas when onDelta is set", async () => {
+    const originalFetch = globalThis.fetch;
+    const chunks = [
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+      'data: {"choices":[{"delta":{"content":" there"}}]}\n\n',
+      "data: [DONE]\n\n",
+    ];
+    globalThis.fetch = (async (_url: any, init: any) => {
+      expect(JSON.parse(init.body).stream).toBe(true);
+      const encoder = new TextEncoder();
+      let i = 0;
+      const body = new ReadableStream({
+        pull(controller) {
+          if (i >= chunks.length) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(encoder.encode(chunks[i]!));
+          i += 1;
+        },
+      });
+      return {
+        ok: true,
+        body,
+      } as any;
+    }) as any;
+
+    try {
+      const client = createOpenAIClient({ OPENAI_API_KEY: "test-key" });
+      const deltas: string[] = [];
+      const turn = await client.complete({
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+        onDelta: (text) => deltas.push(text),
+      });
+      expect(deltas).toEqual(["Hi", " there"]);
+      expect(turn.text).toBe("Hi there");
+      expect(turn.toolCalls).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("keeps non-stream path when onDelta is absent", async () => {
+    const originalFetch = globalThis.fetch;
+    let capturedBody: any;
+    globalThis.fetch = (async (_url: any, init: any) => {
+      capturedBody = JSON.parse(init.body);
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "ok", tool_calls: [] } }],
+        }),
+      } as any;
+    }) as any;
+
+    try {
+      const client = createOpenAIClient({ OPENAI_API_KEY: "test-key" });
+      const turn = await client.complete({
+        messages: [{ role: "user", content: "hi" }],
+        tools: [],
+      });
+      expect(capturedBody.stream).toBeUndefined();
+      expect(turn.text).toBe("ok");
     } finally {
       globalThis.fetch = originalFetch;
     }

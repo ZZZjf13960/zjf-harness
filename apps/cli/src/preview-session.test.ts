@@ -82,6 +82,10 @@ describe("TTY session", () => {
         this.messages.push({ role, text });
       }
       setBusy() {}
+      beginStream() {}
+      appendStream() {}
+      endStream() {}
+      setToolProgress() {}
       async readInput() {
         return this.events.shift() ?? { type: "exit" as const };
       }

@@ -20,6 +20,7 @@ import {
   createOpenAIClient,
   createSession,
   runLoop,
+  type LoopEvent,
   type ModelClient,
 } from "@zjf-harness/core";
 import { createRpcServer } from "@zjf-harness/rpc";
@@ -604,6 +605,10 @@ export type TerminalUi = {
   setMode(mode: PermissionMode): void;
   addMessage(role: "user" | "assistant" | "system", text: string): void;
   setBusy(busy: boolean, interrupt?: () => void): void;
+  beginStream(): void;
+  appendStream(text: string): void;
+  endStream(): void;
+  setToolProgress(label: string | undefined): void;
   readInput(): Promise<TuiInputEvent>;
   approve(input: {
     tool: string;
@@ -699,17 +704,45 @@ export async function runTui(
       const controller = new AbortController();
       ui.setBusy(true, () => controller.abort());
 
+      let streamStarted = false;
+      let streamedAssistant = false;
       try {
+        const onEvent = (event: LoopEvent) => {
+          if (event.type === "assistant.delta") {
+            if (!streamStarted) {
+              ui.beginStream();
+              streamStarted = true;
+            }
+            streamedAssistant = true;
+            ui.appendStream(event.text);
+            return;
+          }
+          if (event.type === "tool.start") {
+            ui.setToolProgress("running " + event.tool);
+            return;
+          }
+          if (event.type === "tool.end") {
+            ui.setToolProgress(undefined);
+            return;
+          }
+          if (event.type === "turn.done") {
+            ui.endStream();
+            streamStarted = false;
+          }
+        };
         const result = await runLoop({
           session,
           prompt: currentPrompt,
           model: client,
           signal: controller.signal,
           onApprove: (gate) => ui.approve(gate),
+          onEvent,
         });
         lastExitCode = result.exitCode;
         const answer = resultText(result.stdout);
-        if (answer) ui.addMessage("assistant", answer);
+        if (answer && !streamedAssistant) {
+          ui.addMessage("assistant", answer);
+        }
         const error = result.stderr.trim();
         if (error) {
           ui.addMessage(
@@ -727,6 +760,10 @@ export async function runTui(
         lastExitCode = controller.signal.aborted ? 0 : 1;
         ui.addMessage("system", message);
       } finally {
+        if (streamStarted) {
+          ui.endStream();
+        }
+        ui.setToolProgress(undefined);
         ui.setBusy(false);
       }
     }
