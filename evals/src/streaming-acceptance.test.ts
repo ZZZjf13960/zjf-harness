@@ -21,7 +21,6 @@ function fakeModel(turns: ModelTurn[]): ModelClient {
       const turn = turns[Math.min(i, turns.length - 1)]!;
       i += 1;
       if (turn.text && input.onDelta) {
-        // Emit coarse deltas so acceptance sees streaming, not just final text.
         const mid = Math.max(1, Math.floor(turn.text.length / 2));
         input.onDelta(turn.text.slice(0, mid));
         input.onDelta(turn.text.slice(mid));
@@ -36,18 +35,15 @@ function makeTui() {
     write(_chunk, _enc, cb) {
       cb();
     },
-  });
-  const input = new Writable({
-    write(_chunk, _enc, cb) {
-      cb();
-    },
-  }) as unknown as NodeJS.ReadStream;
+  }) as NodeJS.WriteStream;
+  (output as { columns?: number }).columns = 80;
+  (output as { rows?: number }).rows = 24;
+  const input = new Writable() as unknown as NodeJS.ReadStream;
   (input as { isTTY?: boolean }).isTTY = false;
-  (input as { setRawMode?: (v: boolean) => void }).setRawMode = () => {};
-  (input as { resume?: () => void }).resume = () => {};
-  (input as { pause?: () => void }).pause = () => {};
-  (input as { on?: (...args: unknown[]) => void }).on = () => input;
-  (input as { off?: (...args: unknown[]) => void }).off = () => input;
+  (input as { on?: (...args: unknown[]) => unknown }).on = () => input;
+  (input as { off?: (...args: unknown[]) => unknown }).off = () => input;
+  (input as { resume?: () => unknown }).resume = () => input;
+  (input as { pause?: () => unknown }).pause = () => input;
   const ui = new NativeTerminalTui({ input, output });
   ui.open("plan");
   return ui;
@@ -75,10 +71,15 @@ describe("streaming acceptance (#29)", () => {
     });
     expect(result.exitCode).toBe(0);
     expect(events.filter((e) => e.type === "tool.start")).toEqual([]);
-    expect(events.filter((e) => e.type === "assistant.delta").length).toBeGreaterThan(0);
+    expect(
+      events.filter((e) => e.type === "assistant.delta").length,
+    ).toBeGreaterThan(0);
     expect(events.at(-1)).toEqual({ type: "turn.done" });
     const joined = events
-      .filter((e): e is Extract<LoopEvent, { type: "assistant.delta" }> => e.type === "assistant.delta")
+      .filter(
+        (e): e is Extract<LoopEvent, { type: "assistant.delta" }> =>
+          e.type === "assistant.delta",
+      )
       .map((e) => e.text)
       .join("");
     expect(joined).toBe("Hello!");
@@ -97,7 +98,9 @@ describe("streaming acceptance (#29)", () => {
       model: fakeModel([
         {
           text: "reading",
-          toolCalls: [{ id: "read-1", name: "read", arguments: { path: file } }],
+          toolCalls: [
+            { id: "read-1", name: "read", arguments: { path: file } },
+          ],
         },
         { text: "done reading", toolCalls: [] },
       ]),
@@ -105,7 +108,9 @@ describe("streaming acceptance (#29)", () => {
     });
     expect(result.exitCode).toBe(0);
     const types = events.map((e) => e.type);
-    expect(types.filter((t) => t === "assistant.delta").length).toBeGreaterThan(0);
+    expect(types.filter((t) => t === "assistant.delta").length).toBeGreaterThan(
+      0,
+    );
     const toolEvents = events.filter(
       (e) => e.type === "tool.start" || e.type === "tool.end",
     );
